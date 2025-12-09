@@ -73,6 +73,7 @@ type Model struct {
 	currentPath    []string
 	displayItems   []*FolderItem
 	cursor         int
+	listOffset     int
 	filterText     string
 	filterInput    textinput.Model
 	
@@ -524,14 +525,40 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	
+	// Calculate visible height for scrolling
+	visibleHeight := m.height - 10
+	if visibleHeight < 5 {
+		visibleHeight = 5
+	}
+	
 	switch msg.String() {
 	case "up", "k":
 		if m.cursor > 0 {
 			m.cursor--
+			// Scroll up if cursor goes above visible area
+			if m.cursor < m.listOffset {
+				m.listOffset = m.cursor
+			}
 		}
 	case "down", "j":
 		if m.cursor < len(m.displayItems)-1 {
 			m.cursor++
+			// Scroll down if cursor goes below visible area
+			if m.cursor >= m.listOffset+visibleHeight {
+				m.listOffset = m.cursor - visibleHeight + 1
+			}
+		}
+	case "g":
+		// Go to top
+		m.cursor = 0
+		m.listOffset = 0
+	case "G":
+		// Go to bottom
+		if len(m.displayItems) > 0 {
+			m.cursor = len(m.displayItems) - 1
+			if m.cursor >= visibleHeight {
+				m.listOffset = m.cursor - visibleHeight + 1
+			}
 		}
 	case "enter", "l":
 		if len(m.displayItems) > 0 {
@@ -540,6 +567,7 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.currentPath = append(m.currentPath, item.Name)
 				m.updateDisplayItems()
 				m.cursor = 0
+				m.listOffset = 0
 			} else if item.Secret != nil {
 				m.selectedSecret = item.Secret
 				m.view = ViewDetail
@@ -554,6 +582,7 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.currentPath = m.currentPath[:len(m.currentPath)-1]
 			m.updateDisplayItems()
 			m.cursor = 0
+			m.listOffset = 0
 		} else if m.filterText != "" {
 			// Clear filter if at root
 			m.filterText = ""
@@ -1182,6 +1211,9 @@ func (m *Model) updateDisplayItems() {
 	if m.cursor < 0 {
 		m.cursor = 0
 	}
+	
+	// Reset scroll offset
+	m.listOffset = 0
 }
 
 // generateCode generates code from a template
@@ -1367,7 +1399,27 @@ func (m Model) viewList() string {
 	if len(m.displayItems) == 0 {
 		b.WriteString(m.styles.SubtleText().Render("No secrets found"))
 	} else {
-		for i, item := range m.displayItems {
+		// Calculate visible window
+		visibleHeight := m.height - 10 // Leave room for header, footer, breadcrumb, etc.
+		if visibleHeight < 5 {
+			visibleHeight = 5
+		}
+		
+		startIdx := m.listOffset
+		endIdx := startIdx + visibleHeight
+		if endIdx > len(m.displayItems) {
+			endIdx = len(m.displayItems)
+		}
+		
+		// Show scroll indicator at top if needed
+		if startIdx > 0 {
+			b.WriteString(m.styles.SubtleText().Render(fmt.Sprintf("  ↑ %d more items above", startIdx)))
+			b.WriteString("\n")
+		}
+		
+		// Render visible items
+		for i := startIdx; i < endIdx; i++ {
+			item := m.displayItems[i]
 			var line string
 			icon := "🔑"
 			nameStyle := m.styles.ListSecret
@@ -1388,6 +1440,17 @@ func (m Model) viewList() string {
 			b.WriteString(line)
 			b.WriteString("\n")
 		}
+		
+		// Show scroll indicator at bottom if needed
+		remaining := len(m.displayItems) - endIdx
+		if remaining > 0 {
+			b.WriteString(m.styles.SubtleText().Render(fmt.Sprintf("  ↓ %d more items below", remaining)))
+			b.WriteString("\n")
+		}
+		
+		// Show position indicator
+		b.WriteString("\n")
+		b.WriteString(m.styles.SubtleText().Render(fmt.Sprintf("  %d/%d", m.cursor+1, len(m.displayItems))))
 	}
 	
 	return b.String()

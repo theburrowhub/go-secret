@@ -117,6 +117,7 @@ type FooterBinding struct {
 func ListViewBindings() []FooterBinding {
 	return []FooterBinding{
 		{Key: "↑↓/jk", Desc: "navigate"},
+		{Key: "g/G", Desc: "top/bottom"},
 		{Key: "Enter/l", Desc: "open"},
 		{Key: "Esc/h", Desc: "back"},
 		{Key: "/", Desc: "filter"},
@@ -124,7 +125,6 @@ func ListViewBindings() []FooterBinding {
 		{Key: "d", Desc: "delete"},
 		{Key: "^R", Desc: "refresh"},
 		{Key: "^P", Desc: "project"},
-		{Key: "^S", Desc: "settings"},
 		{Key: "q", Desc: "quit"},
 	}
 }
