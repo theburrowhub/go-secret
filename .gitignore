@@ -1,0 +1,41 @@
+# Binaries
+go-secrets
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Build directories
+build/
+dist/
+tmp/
+
+# Test binary
+*.test
+
+# Output of the go coverage tool
+*.out
+coverage.html
+
+# Dependency directories
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Debug
+debug.log
+build-errors.log
+
+# Air (hot reload)
+.air.toml
+
