@@ -82,7 +82,7 @@ type Model struct {
 	selectedSecret *gcp.Secret
 	versions       []gcp.SecretVersion
 	versionCursor  int
-	revealedValue  string
+	revealedValue  []byte // Stored as []byte for secure memory handling
 	revealVersion  string
 	
 	// Create view state
@@ -363,6 +363,35 @@ func clearClipboardCmd() tea.Cmd {
 	}
 }
 
+// setRevealedValue securely sets the revealed secret value
+func (m *Model) setRevealedValue(value []byte) {
+	// Clear old value first
+	m.clearRevealedValue()
+	// Copy to new slice to avoid sharing memory with original
+	m.revealedValue = make([]byte, len(value))
+	copy(m.revealedValue, value)
+}
+
+// clearRevealedValue securely zeros and clears the revealed secret from memory
+func (m *Model) clearRevealedValue() {
+	if m.revealedValue != nil {
+		// Zero out memory before releasing
+		for i := range m.revealedValue {
+			m.revealedValue[i] = 0
+		}
+		m.revealedValue = nil
+	}
+}
+
+// getRevealedValueString returns the revealed value as string for display only
+// Note: The returned string is still immutable in Go, but we minimize its lifetime
+func (m *Model) getRevealedValueString() string {
+	if m.revealedValue == nil {
+		return ""
+	}
+	return string(m.revealedValue)
+}
+
 // Update handles messages and updates the model
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
@@ -501,7 +530,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusErr = true
 			return m, nil
 		}
-		m.revealedValue = string(msg.value)
+		// Securely store the secret value
+		m.setRevealedValue(msg.value)
+		// Zero original value from message
+		for i := range msg.value {
+			msg.value[i] = 0
+		}
 		m.revealVersion = msg.version
 		m.view = ViewReveal
 		
@@ -692,7 +726,11 @@ func (m Model) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.view = ViewList
 		m.selectedSecret = nil
 		m.versions = nil
-		m.revealedValue = ""
+		// Securely clear secret from memory
+		for i := range m.revealedValue {
+			m.revealedValue[i] = 0
+		}
+		m.revealedValue = nil
 	case "r":
 		if len(m.versions) > 0 {
 			version := m.versions[m.versionCursor]
@@ -1164,13 +1202,17 @@ func (m Model) updateReveal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc", "backspace", "enter", "r":
 		m.view = ViewDetail
-		m.revealedValue = ""
+		// Securely clear secret from memory
+		for i := range m.revealedValue {
+			m.revealedValue[i] = 0
+		}
+		m.revealedValue = nil
 		m.revealVersion = ""
 		return m, nil
 	case "c", "y":
 		// Copy revealed value to clipboard
-		if m.revealedValue != "" {
-			err := clipboard.WriteAll(m.revealedValue)
+		if len(m.revealedValue) > 0 {
+			err := clipboard.WriteAll(string(m.revealedValue))
 			if err != nil {
 				m.statusMsg = fmt.Sprintf("Error copying: %v", err)
 				m.statusErr = true
@@ -1973,8 +2015,11 @@ func (m Model) viewReveal() string {
 	b.WriteString(m.styles.DetailVersion.Render(m.revealVersion))
 	b.WriteString("\n")
 	
+	// Convert to string only for display (minimize lifetime)
+	displayValue := m.getRevealedValueString()
+	
 	// Size info
-	lines := strings.Split(m.revealedValue, "\n")
+	lines := strings.Split(displayValue, "\n")
 	lineCount := len(lines)
 	byteCount := len(m.revealedValue)
 	sizeInfo := fmt.Sprintf("%d bytes", byteCount)
@@ -1998,7 +2043,7 @@ func (m Model) viewReveal() string {
 	
 	if lineCount == 1 {
 		// Single line - show as is with nice formatting
-		b.WriteString(m.styles.CodeBlock.Width(m.width - 10).Render(m.revealedValue))
+		b.WriteString(m.styles.CodeBlock.Width(m.width - 10).Render(displayValue))
 	} else {
 		// Multi-line - show with line numbers
 		var contentBuilder strings.Builder
