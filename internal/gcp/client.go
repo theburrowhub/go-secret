@@ -2,11 +2,17 @@ package gcp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"os/user"
 	"strings"
 
 	secretmanager "cloud.google.com/go/secretmanager/apiv1"
 	"cloud.google.com/go/secretmanager/apiv1/secretmanagerpb"
+	"golang.org/x/oauth2/google"
 	"google.golang.org/api/iterator"
 )
 
@@ -30,6 +36,7 @@ type SecretVersion struct {
 type Client struct {
 	client    *secretmanager.Client
 	projectID string
+	userEmail string
 }
 
 // NewClient creates a new GCP Secret Manager client
@@ -39,9 +46,13 @@ func NewClient(ctx context.Context, projectID string) (*Client, error) {
 		return nil, fmt.Errorf("failed to create secretmanager client: %w", err)
 	}
 
+	// Try to get the authenticated user email
+	userEmail := getAuthenticatedUser(ctx)
+
 	return &Client{
 		client:    client,
 		projectID: projectID,
+		userEmail: userEmail,
 	}, nil
 }
 
@@ -53,6 +64,69 @@ func (c *Client) Close() error {
 // ProjectID returns the current project ID
 func (c *Client) ProjectID() string {
 	return c.projectID
+}
+
+// UserEmail returns the authenticated user email
+func (c *Client) UserEmail() string {
+	return c.userEmail
+}
+
+// getAuthenticatedUser attempts to get the email of the authenticated GCP user
+func getAuthenticatedUser(ctx context.Context) string {
+	// Try to get credentials from Application Default Credentials
+	creds, err := google.FindDefaultCredentials(ctx, "https://www.googleapis.com/auth/cloud-platform")
+	if err != nil {
+		return getLocalUser()
+	}
+
+	// Try to get token and use tokeninfo endpoint
+	token, err := creds.TokenSource.Token()
+	if err != nil {
+		return getLocalUser()
+	}
+
+	// Call Google's tokeninfo endpoint to get user email
+	resp, err := http.Get("https://oauth2.googleapis.com/tokeninfo?access_token=" + token.AccessToken)
+	if err != nil {
+		return getLocalUser()
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return getLocalUser()
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return getLocalUser()
+	}
+
+	var tokenInfo struct {
+		Email         string `json:"email"`
+		EmailVerified string `json:"email_verified"`
+	}
+	if err := json.Unmarshal(body, &tokenInfo); err != nil {
+		return getLocalUser()
+	}
+
+	if tokenInfo.Email != "" {
+		return tokenInfo.Email
+	}
+
+	return getLocalUser()
+}
+
+// getLocalUser returns the local system username as fallback
+func getLocalUser() string {
+	// Try to get current user
+	if u, err := user.Current(); err == nil {
+		return u.Username
+	}
+	// Fallback to environment variable
+	if username := os.Getenv("USER"); username != "" {
+		return username
+	}
+	return "unknown"
 }
 
 // ListSecrets lists all secrets in the project

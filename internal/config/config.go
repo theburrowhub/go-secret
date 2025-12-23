@@ -14,12 +14,35 @@ type Template struct {
 	Code  string `yaml:"code"`
 }
 
+// ClipboardConfig holds clipboard security settings
+type ClipboardConfig struct {
+	AutoClear      bool `yaml:"auto_clear"`
+	TimeoutSeconds int  `yaml:"timeout_seconds"`
+}
+
+// AuditConfig holds audit logging settings
+type AuditConfig struct {
+	Enabled    bool   `yaml:"enabled"`
+	FilePath   string `yaml:"file_path,omitempty"`
+	MaxSizeMB  int    `yaml:"max_size_mb"`
+	MaxAgeDays int    `yaml:"max_age_days"`
+}
+
+// SessionConfig holds session security settings
+type SessionConfig struct {
+	InactivityTimeout int  `yaml:"inactivity_timeout"` // Minutes, 0 = disabled
+	LockOnTimeout     bool `yaml:"lock_on_timeout"`
+}
+
 // Config holds the application configuration
 type Config struct {
-	ProjectID        string     `yaml:"project_id"`
-	FolderSeparator  string     `yaml:"folder_separator"`
-	Templates        []Template `yaml:"templates"`
-	RecentProjects   []string   `yaml:"recent_projects"`
+	ProjectID        string          `yaml:"project_id"`
+	FolderSeparator  string          `yaml:"folder_separator"`
+	Templates        []Template      `yaml:"templates"`
+	RecentProjects   []string        `yaml:"recent_projects"`
+	Clipboard        ClipboardConfig `yaml:"clipboard"`
+	Audit            AuditConfig     `yaml:"audit"`
+	Session          SessionConfig   `yaml:"session"`
 }
 
 // DefaultConfig returns a config with sensible defaults
@@ -27,6 +50,20 @@ func DefaultConfig() *Config {
 	return &Config{
 		ProjectID:       "",
 		FolderSeparator: "/",
+		Clipboard: ClipboardConfig{
+			AutoClear:      true,
+			TimeoutSeconds: 30,
+		},
+		Audit: AuditConfig{
+			Enabled:    true,
+			FilePath:   "", // Uses default path
+			MaxSizeMB:  10,
+			MaxAgeDays: 90,
+		},
+		Session: SessionConfig{
+			InactivityTimeout: 15, // 15 minutes default
+			LockOnTimeout:     true,
+		},
 		Templates: []Template{
 			{
 				Title: "Bash Export",
@@ -104,9 +141,12 @@ func GetConfigPath() (string, error) {
 	}
 
 	appDir := filepath.Join(configDir, "go-secrets")
-	if err := os.MkdirAll(appDir, 0755); err != nil {
+	// Use 0700 for directory - only owner can access
+	if err := os.MkdirAll(appDir, 0700); err != nil {
 		return "", err
 	}
+	// Fix permissions if directory already existed with insecure permissions
+	_ = os.Chmod(appDir, 0700)
 
 	return filepath.Join(appDir, "config.yaml"), nil
 }
@@ -118,11 +158,23 @@ func Load() (*Config, error) {
 		return DefaultConfig(), nil
 	}
 
-	data, err := os.ReadFile(configPath)
+	// Check if file exists and fix permissions if needed
+	info, err := os.Stat(configPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return DefaultConfig(), nil
 		}
+		return nil, err
+	}
+
+	// Fix insecure permissions on existing config file
+	mode := info.Mode().Perm()
+	if mode != 0600 {
+		_ = os.Chmod(configPath, 0600)
+	}
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
 		return nil, err
 	}
 
@@ -134,7 +186,7 @@ func Load() (*Config, error) {
 	return cfg, nil
 }
 
-// Save writes the config to disk
+// Save writes the config to disk with secure permissions
 func (c *Config) Save() error {
 	configPath, err := GetConfigPath()
 	if err != nil {
@@ -146,7 +198,14 @@ func (c *Config) Save() error {
 		return err
 	}
 
-	return os.WriteFile(configPath, data, 0644)
+	// Write with secure permissions - only owner can read/write (0600)
+	if err := os.WriteFile(configPath, data, 0600); err != nil {
+		return err
+	}
+
+	// Ensure directory also has secure permissions
+	configDir := filepath.Dir(configPath)
+	return os.Chmod(configDir, 0700)
 }
 
 // AddRecentProject adds a project to the saved projects list
