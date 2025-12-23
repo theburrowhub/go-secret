@@ -9,13 +9,13 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/theburrowhub/go-secret/internal/audit"
+	"github.com/theburrowhub/go-secret/internal/clipboard"
 	"github.com/theburrowhub/go-secret/internal/config"
 	"github.com/theburrowhub/go-secret/internal/gcp"
 )
@@ -372,7 +372,7 @@ func (m Model) copySecretValue(secretName, version string) tea.Cmd {
 		if err != nil {
 			return secretCopiedMsg{secretName: secretName, version: version, err: err}
 		}
-		err = clipboard.WriteAll(string(value))
+		err = clipboard.WriteText(string(value))
 		return secretCopiedMsg{secretName: secretName, version: version, err: err}
 	}
 }
@@ -387,7 +387,7 @@ func clipboardTickCmd() tea.Cmd {
 // clearClipboardCmd returns a command that clears the clipboard
 func clearClipboardCmd() tea.Cmd {
 	return func() tea.Msg {
-		_ = clipboard.WriteAll("")
+		_ = clipboard.Clear()
 		return clipboardClearMsg{}
 	}
 }
@@ -1434,7 +1434,7 @@ func (m Model) updateReveal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "c", "y":
 		// Copy revealed value to clipboard
 		if len(m.revealedValue) > 0 {
-			err := clipboard.WriteAll(string(m.revealedValue))
+			err := clipboard.WriteText(string(m.revealedValue))
 			if err != nil {
 				m.statusMsg = fmt.Sprintf("Error copying: %v", err)
 				m.statusErr = true
