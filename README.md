@@ -1,19 +1,112 @@
-# go-secrets
+# 🔐 go-secret
 
-A beautiful terminal UI for managing GCP Secret Manager secrets, built with [Bubble Tea](https://github.com/charmbracelet/bubbletea).
+```
+ ▄▄▄▄▄▄▄▄▄▄▄  ▄▄▄▄▄▄▄▄▄▄▄       ▄▄▄▄▄▄▄▄▄▄▄  ▄▄▄▄▄▄▄▄▄▄▄  ▄▄▄▄▄▄▄▄▄▄▄  ▄▄▄▄▄▄▄▄▄▄▄  ▄▄▄▄▄▄▄▄▄▄▄  ▄▄▄▄▄▄▄▄▄▄▄ 
+▐░░░░░░░░░░░▌▐░░░░░░░░░░░▌     ▐░░░░░░░░░░░▌▐░░░░░░░░░░░▌▐░░░░░░░░░░░▌▐░░░░░░░░░░░▌▐░░░░░░░░░░░▌▐░░░░░░░░░░░▌
+▐░█▀▀▀▀▀▀▀▀▀ ▐░█▀▀▀▀▀▀▀█░▌     ▐░█▀▀▀▀▀▀▀▀▀ ▐░█▀▀▀▀▀▀▀▀▀ ▐░█▀▀▀▀▀▀▀▀▀ ▐░█▀▀▀▀▀▀▀█░▌▐░█▀▀▀▀▀▀▀▀▀  ▀▀▀▀█░█▀▀▀▀ 
+▐░▌          ▐░▌       ▐░▌     ▐░▌          ▐░▌          ▐░▌          ▐░▌       ▐░▌▐░▌               ▐░▌     
+▐░▌ ▄▄▄▄▄▄▄▄ ▐░▌       ▐░▌     ▐░█▄▄▄▄▄▄▄▄▄ ▐░█▄▄▄▄▄▄▄▄▄ ▐░▌          ▐░█▄▄▄▄▄▄▄█░▌▐░█▄▄▄▄▄▄▄▄▄      ▐░▌     
+▐░▌▐░░░░░░░░▌▐░▌       ▐░▌     ▐░░░░░░░░░░░▌▐░░░░░░░░░░░▌▐░▌          ▐░░░░░░░░░░░▌▐░░░░░░░░░░░▌     ▐░▌     
+▐░▌ ▀▀▀▀▀▀█░▌▐░▌       ▐░▌      ▀▀▀▀▀▀▀▀▀█░▌▐░█▀▀▀▀▀▀▀▀▀ ▐░▌          ▐░█▀▀▀▀█░█▀▀ ▐░█▀▀▀▀▀▀▀▀▀      ▐░▌     
+▐░▌       ▐░▌▐░▌       ▐░▌               ▐░▌▐░▌          ▐░▌          ▐░▌     ▐░▌  ▐░▌               ▐░▌     
+▐░█▄▄▄▄▄▄▄█░▌▐░█▄▄▄▄▄▄▄█░▌      ▄▄▄▄▄▄▄▄▄█░▌▐░█▄▄▄▄▄▄▄▄▄ ▐░█▄▄▄▄▄▄▄▄▄ ▐░▌      ▐░▌ ▐░█▄▄▄▄▄▄▄▄▄      ▐░▌     
+▐░░░░░░░░░░░▌▐░░░░░░░░░░░▌     ▐░░░░░░░░░░░▌▐░░░░░░░░░░░▌▐░░░░░░░░░░░▌▐░▌       ▐░▌▐░░░░░░░░░░░▌     ▐░▌     
+ ▀▀▀▀▀▀▀▀▀▀▀  ▀▀▀▀▀▀▀▀▀▀▀       ▀▀▀▀▀▀▀▀▀▀▀  ▀▀▀▀▀▀▀▀▀▀▀  ▀▀▀▀▀▀▀▀▀▀▀  ▀         ▀  ▀▀▀▀▀▀▀▀▀▀▀       ▀      
+```
 
-![Go Version](https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat&logo=go)
+**A security-first terminal UI for managing GCP Secret Manager secrets**, built with [Bubble Tea](https://github.com/charmbracelet/bubbletea).
 
-## Features
+![Go Version](https://img.shields.io/badge/Go-1.24+-00ADD8?style=flat&logo=go)
+![License](https://img.shields.io/badge/License-MIT-green?style=flat)
+![Security](https://img.shields.io/badge/Security-Hardened-red?style=flat&logo=shield)
 
-- 📁 **Folder-like navigation**: Secrets are organized into virtual folders based on a configurable separator
+---
+
+## ✨ Features
+
+- 📁 **Folder-like navigation**: Secrets organized into virtual folders based on a configurable separator
 - 🔍 **Real-time filtering**: Quickly find secrets with instant search
 - 🔐 **Version management**: View, reveal, and add new versions to secrets
 - 📋 **Code generation**: Generate code snippets for common use cases (bash, helmfile, kyverno, etc.)
 - ⚙️ **Configurable**: Store settings in a YAML config file
-- 🎨 **Beautiful UI**: Modern terminal interface with keyboard shortcuts (nano-style footer)
+- 🎨 **Beautiful UI**: Modern terminal interface with Darcula theme and keyboard shortcuts
 
-## Installation
+---
+
+## 🛡️ Security Features
+
+**go-secret** was built with security as a core principle. Every feature is designed to minimize the risk of secret exposure.
+
+### 🔒 Secure Memory Handling
+
+| Feature | Description |
+|---------|-------------|
+| **Byte-level storage** | Secrets are stored as `[]byte` instead of strings, allowing explicit memory zeroing |
+| **Automatic zeroing** | Secret values are zeroed out immediately after display or copy |
+| **No lingering data** | Memory is cleared when navigating away from secret views |
+
+### 📋 Clipboard Protection
+
+| Feature | Description |
+|---------|-------------|
+| **Auto-clear** | Clipboard is automatically cleared after configurable timeout (default: 30s) |
+| **Visual countdown** | Status bar shows countdown until clipboard is cleared |
+| **Secure library** | Uses actively maintained [`golang.design/x/clipboard`](https://github.com/golang-design/clipboard) |
+
+### ⏰ Session Management
+
+| Feature | Description |
+|---------|-------------|
+| **Inactivity timeout** | Session locks automatically after configurable inactivity (default: 15 min) |
+| **Automatic lock** | Sensitive data is cleared from memory when session locks |
+| **Quick unlock** | Press `Enter` or `Space` to unlock and resume |
+
+### 📝 Audit Logging
+
+| Feature | Description |
+|---------|-------------|
+| **Comprehensive logging** | All security-relevant events are logged with timestamps |
+| **User identification** | Logs include GCP authenticated user email |
+| **Structured JSON** | Machine-readable format for SIEM integration |
+| **Log rotation** | Automatic rotation by size and age |
+| **In-app viewer** | View audit logs directly from Security Settings |
+
+**Events logged:**
+- `SECRET_LIST`, `SECRET_ACCESS`, `SECRET_REVEAL`, `SECRET_COPY`
+- `SECRET_CREATE`, `SECRET_DELETE`, `VERSION_ADD`
+- `SESSION_START`, `SESSION_END`, `SESSION_LOCK`, `SESSION_UNLOCK`
+- `CONFIG_CHANGE`, `PROJECT_SWITCH`, `CLIPBOARD_CLEAR`
+
+### 🔐 File Security
+
+| Feature | Description |
+|---------|-------------|
+| **Secure permissions** | Config files: `0600`, directories: `0700` |
+| **Auto-fix** | Insecure permissions are automatically corrected on load |
+| **No world-readable files** | Only the owner can access configuration and logs |
+
+### 🛡️ Security Settings Menu
+
+Access with `Ctrl+S` → "🔒 Security Settings":
+
+```
+📋 Clipboard
+  ✓ Auto-clear: Enabled
+  ⏱  Clear timeout: 30 seconds
+
+📝 Audit Logging
+  ✓ Audit logging: Enabled
+  📅 Log retention: 90 days
+  👁  View audit logs →
+
+⏰ Session Security
+  ✓ Lock on timeout: Enabled
+  ⏱  Inactivity timeout: 15 minutes
+```
+
+---
+
+## 🚀 Installation
 
 ```bash
 go install github.com/theburrowhub/go-secret@latest
@@ -24,33 +117,43 @@ Or build from source:
 ```bash
 git clone https://github.com/theburrowhub/go-secret.git
 cd go-secret
-go build -o go-secret .
+make build
 ```
 
-## Usage
+## 📖 Usage
 
 ```bash
 # Run with a project ID
-go-secrets -project my-gcp-project
+go-secret -project my-gcp-project
 
 # Or use the shorthand
-go-secrets -p my-gcp-project
+go-secret -p my-gcp-project
 
 # Run without arguments to be prompted for project ID
-go-secrets
+go-secret
 ```
 
 ### Authentication
 
-The application uses Google Cloud's Application Default Credentials (ADC). Make sure you're authenticated:
+The application uses Google Cloud's Application Default Credentials (ADC):
 
 ```bash
 gcloud auth application-default login
 ```
 
-Or set the `GOOGLE_APPLICATION_CREDENTIALS` environment variable to point to a service account key file.
+Or set `GOOGLE_APPLICATION_CREDENTIALS` to point to a service account key file.
 
-## Keyboard Shortcuts
+---
+
+## ⌨️ Keyboard Shortcuts
+
+### Global Shortcuts
+
+| Key | Action |
+|-----|--------|
+| `Ctrl+P` | **Quick project switch** (from any screen) |
+| `Ctrl+S` | Open settings menu |
+| `Ctrl+C` | Quit |
 
 ### List View
 
@@ -58,45 +161,12 @@ Or set the `GOOGLE_APPLICATION_CREDENTIALS` environment variable to point to a s
 |-----|--------|
 | `↑/k` | Move cursor up |
 | `↓/j` | Move cursor down |
-| `Enter` | Open folder/secret |
-| `Backspace` | Go back to parent folder |
+| `Enter/l` | Open folder/secret |
+| `Backspace/h` | Go back to parent folder |
 | `/` | Filter secrets |
 | `n` | Create new secret |
 | `d` | Delete secret |
 | `Ctrl+R` | Refresh list |
-| `Ctrl+P` | **Quick project switch** |
-| `Ctrl+S` | Open settings menu |
-| `q` | Quit |
-
-### Quick Project Switch (`Ctrl+P`)
-
-Available from **any screen**, press `Ctrl+P` to quickly switch between GCP projects:
-
-- **All used projects are saved** - no limit on history
-- Type to filter existing projects or **add a new project ID**
-- Use `↑/↓` to select from saved projects
-- Press `Enter` to switch (or add new)
-- Press `Esc` to cancel
-
-The selector shows:
-- `➕ Add new project: "xxx"` - when typing a new project ID
-- `➡️ Switch to: "xxx"` - when typing an existing project
-- `✓` marks the current project
-
-### Settings Menu
-
-| Key | Action |
-|-----|--------|
-| `↑/↓` | Navigate menu |
-| `Enter` | Select option |
-| `Esc` | Back to list |
-
-#### Settings Sections
-
-- **📋 Basic Settings**: Edit Project ID and folder separator
-- **📝 Code Templates**: Manage code generation templates (add, edit, delete)
-- **🕐 Recent Projects**: View and switch between recent projects
-- **💾 Save & Exit**: Save all changes and return to list
 
 ### Detail View
 
@@ -105,85 +175,68 @@ The selector shows:
 | `↑/k` | Select previous version |
 | `↓/j` | Select next version |
 | `r` | Reveal secret value |
+| `c/y` | Copy to clipboard |
 | `a` | Add new version |
 | `g` | Generate code snippet |
 | `d` | Delete secret |
-| `Esc` | Go back to list |
-| `q` | Quit |
+| `Esc/h` | Go back to list |
 
-## Configuration
+### Reveal View
 
-The configuration file is stored in the user's config directory:
+| Key | Action |
+|-----|--------|
+| `c/y` | Copy revealed value to clipboard |
+| `Esc/r` | Hide value and go back |
+
+---
+
+## ⚙️ Configuration
+
+Configuration is stored with **secure permissions** (`0600`):
 
 - **macOS**: `~/Library/Application Support/go-secrets/config.yaml`
 - **Linux**: `~/.config/go-secrets/config.yaml`
 - **Windows**: `%APPDATA%\go-secrets\config.yaml`
 
-### Configuration Options
+### Full Configuration Example
 
 ```yaml
 # GCP Project ID
 project_id: "my-project"
 
-# Character used to create virtual folders in secret names
-# e.g., with "/", "app/database/password" becomes: app > database > password
+# Folder separator for virtual folder navigation
 folder_separator: "/"
 
-# All saved projects (no limit, most recent first)
+# All saved projects (most recent first)
 recent_projects:
   - "project-1"
   - "project-2"
-  - "project-3"
 
-# Code templates for generation
+# 🔒 Clipboard security settings
+clipboard:
+  auto_clear: true      # Automatically clear clipboard after copying
+  timeout_seconds: 30   # Seconds before clipboard is cleared
+
+# 📝 Audit logging settings
+audit:
+  enabled: true         # Enable comprehensive audit logging
+  file_path: ""         # Custom path (empty = default location)
+  max_size_mb: 10       # Max log file size before rotation
+  max_age_days: 90      # Days to retain old logs
+
+# ⏰ Session security settings
+session:
+  inactivity_timeout: 15  # Minutes of inactivity before lock (0 = disabled)
+  lock_on_timeout: true   # Lock session on timeout
+
+# Code generation templates
 templates:
   - title: "Bash Export"
     code: |
       export {{.SecretName}}=$(gcloud secrets versions access latest --secret="{{.FullSecretName}}" --project="{{.ProjectID}}")
-
-  - title: "Helmfile secretRef"
-    code: |
-      - secretRef:
-          name: {{.SecretName}}
-          key: {{.FullSecretName}}
-
-  - title: "Kyverno Policy"
-    code: |
-      apiVersion: kyverno.io/v1
-      kind: ClusterPolicy
-      metadata:
-        name: require-secret-{{.SecretName}}
-      spec:
-        validationFailureAction: enforce
-        rules:
-        - name: check-secret
-          match:
-            resources:
-              kinds:
-              - Pod
-          validate:
-            message: "Secret {{.FullSecretName}} must be referenced"
-            pattern:
-              spec:
-                containers:
-                - env:
-                  - valueFrom:
-                      secretKeyRef:
-                        name: "{{.SecretName}}"
-
-  - title: "Go Client"
-    code: |
-      import secretmanager "cloud.google.com/go/secretmanager/apiv1"
-
-      // Access the secret
-      result, err := client.AccessSecretVersion(ctx, &secretmanagerpb.AccessSecretVersionRequest{
-          Name: "projects/{{.ProjectID}}/secrets/{{.FullSecretName}}/versions/latest",
-      })
 ```
 
 ### Template Variables
-
-When generating code, the following variables are available:
 
 | Variable | Description |
 |----------|-------------|
@@ -191,30 +244,67 @@ When generating code, the following variables are available:
 | `{{.FullSecretName}}` | The complete secret name |
 | `{{.ProjectID}}` | The current GCP project ID |
 
-### Managing Templates from the App
+---
 
-You can add, edit, and delete code templates directly from the application:
-
-1. Press `Ctrl+S` to open Settings
-2. Select "📝 Code Templates"
-3. Use the following keys:
-   - `n` - Create new template
-   - `Enter/e` - Edit selected template
-   - `d` - Delete selected template
-4. In the template editor:
-   - `Tab` - Switch between title and code fields
-   - `Ctrl+S` - Save template
-   - `Esc` - Cancel editing
-
-## Required Permissions
+## 🔑 Required Permissions
 
 The service account or user needs the following IAM roles:
 
-- `roles/secretmanager.viewer` - To list and view secrets
-- `roles/secretmanager.secretAccessor` - To access secret values
-- `roles/secretmanager.admin` - To create, update, and delete secrets (optional)
+| Role | Purpose |
+|------|---------|
+| `roles/secretmanager.viewer` | List and view secrets |
+| `roles/secretmanager.secretAccessor` | Access secret values |
+| `roles/secretmanager.admin` | Create, update, and delete secrets (optional) |
 
-## License
+---
+
+## 📊 Audit Log Format
+
+Audit logs are stored as JSON Lines format for easy parsing:
+
+```json
+{"timestamp":"2024-01-15T10:30:45Z","event_type":"SECRET_REVEAL","result":"SUCCESS","user":"user@example.com","project_id":"my-project","secret_name":"api-key","version":"1"}
+{"timestamp":"2024-01-15T10:30:50Z","event_type":"SECRET_COPY","result":"SUCCESS","user":"user@example.com","project_id":"my-project","secret_name":"api-key","version":"1"}
+{"timestamp":"2024-01-15T10:31:20Z","event_type":"CLIPBOARD_CLEAR","result":"SUCCESS","user":"user@example.com"}
+```
+
+**Log location:**
+- **macOS**: `~/Library/Application Support/go-secrets/logs/audit.log`
+- **Linux**: `~/.config/go-secrets/logs/audit.log`
+
+---
+
+## 🏗️ Development
+
+```bash
+# Build
+make build
+
+# Run tests
+make test
+
+# Run with race detector
+make test-race
+
+# Full check (fmt, vet, lint, test)
+make check
+
+# Build release binaries
+make release
+```
+
+---
+
+## 📜 License
 
 MIT
 
+---
+
+<div align="center">
+
+**Built with 💜 and security in mind**
+
+[Report Bug](https://github.com/theburrowhub/go-secret/issues) · [Request Feature](https://github.com/theburrowhub/go-secret/issues)
+
+</div>
