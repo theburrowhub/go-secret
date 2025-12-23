@@ -108,16 +108,37 @@ Access with `Ctrl+S` → "🔒 Security Settings":
 
 ## 🚀 Installation
 
+### Quick Install (Recommended)
+
+Download and install the latest release automatically:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/theburrowhub/go-secret/main/install.sh | bash
+```
+
+### From Source
+
+Clone the repository and run the install script:
+
+```bash
+git clone https://github.com/theburrowhub/go-secret.git
+cd go-secret
+./install.sh
+```
+
+### Using Go
+
 ```bash
 go install github.com/theburrowhub/go-secret@latest
 ```
 
-Or build from source:
+### Manual Build
 
 ```bash
 git clone https://github.com/theburrowhub/go-secret.git
 cd go-secret
 make build
+# Binary will be at ./go-secrets
 ```
 
 ## 📖 Usage
