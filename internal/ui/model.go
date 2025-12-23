@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"text/template"
+	"time"
 
 	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/textarea"
@@ -130,6 +131,10 @@ type Model struct {
 	// Loading state
 	loading        bool
 	loadingMsg     string
+	
+	// Clipboard auto-clear state
+	clipboardClearAt time.Time
+	clipboardActive  bool
 }
 
 // Messages
@@ -170,6 +175,10 @@ type clientInitializedMsg struct {
 	client *gcp.Client
 	err    error
 }
+
+type clipboardClearMsg struct{}
+
+type clipboardTickMsg time.Time
 
 // NewModel creates a new application model
 func NewModel(cfg *config.Config, projectID string) Model {
@@ -339,6 +348,21 @@ func (m Model) copySecretValue(secretName, version string) tea.Cmd {
 	}
 }
 
+// clipboardTickCmd returns a command that ticks every second for countdown
+func clipboardTickCmd() tea.Cmd {
+	return tea.Tick(time.Second, func(t time.Time) tea.Msg {
+		return clipboardTickMsg(t)
+	})
+}
+
+// clearClipboardCmd returns a command that clears the clipboard
+func clearClipboardCmd() tea.Cmd {
+	return func() tea.Msg {
+		_ = clipboard.WriteAll("")
+		return clipboardClearMsg{}
+	}
+}
+
 // Update handles messages and updates the model
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
@@ -488,7 +512,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusErr = true
 			return m, nil
 		}
+		// Start clipboard auto-clear timer if enabled
+		if m.config.Clipboard.AutoClear && m.config.Clipboard.TimeoutSeconds > 0 {
+			timeout := time.Duration(m.config.Clipboard.TimeoutSeconds) * time.Second
+			m.clipboardClearAt = time.Now().Add(timeout)
+			m.clipboardActive = true
+			remaining := m.config.Clipboard.TimeoutSeconds
+			m.statusMsg = fmt.Sprintf("📋 Copied! Auto-clear in %ds", remaining)
+			m.statusErr = false
+			return m, clipboardTickCmd()
+		}
 		m.statusMsg = "✓ Secret value copied to clipboard"
+		m.statusErr = false
+		
+	case clipboardTickMsg:
+		if !m.clipboardActive {
+			return m, nil
+		}
+		remaining := time.Until(m.clipboardClearAt)
+		if remaining <= 0 {
+			return m, clearClipboardCmd()
+		}
+		m.statusMsg = fmt.Sprintf("📋 Clipboard will clear in %ds", int(remaining.Seconds()))
+		m.statusErr = false
+		return m, clipboardTickCmd()
+		
+	case clipboardClearMsg:
+		m.clipboardActive = false
+		m.statusMsg = "🔒 Clipboard cleared"
 		m.statusErr = false
 	}
 	
@@ -1123,10 +1174,20 @@ func (m Model) updateReveal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if err != nil {
 				m.statusMsg = fmt.Sprintf("Error copying: %v", err)
 				m.statusErr = true
-			} else {
-				m.statusMsg = "✓ Secret value copied to clipboard"
-				m.statusErr = false
+				return m, nil
 			}
+			// Start clipboard auto-clear timer if enabled
+			if m.config.Clipboard.AutoClear && m.config.Clipboard.TimeoutSeconds > 0 {
+				timeout := time.Duration(m.config.Clipboard.TimeoutSeconds) * time.Second
+				m.clipboardClearAt = time.Now().Add(timeout)
+				m.clipboardActive = true
+				remaining := m.config.Clipboard.TimeoutSeconds
+				m.statusMsg = fmt.Sprintf("📋 Copied! Auto-clear in %ds", remaining)
+				m.statusErr = false
+				return m, clipboardTickCmd()
+			}
+			m.statusMsg = "✓ Secret value copied to clipboard"
+			m.statusErr = false
 		}
 		return m, nil
 	}

@@ -14,12 +14,19 @@ type Template struct {
 	Code  string `yaml:"code"`
 }
 
+// ClipboardConfig holds clipboard security settings
+type ClipboardConfig struct {
+	AutoClear      bool `yaml:"auto_clear"`
+	TimeoutSeconds int  `yaml:"timeout_seconds"`
+}
+
 // Config holds the application configuration
 type Config struct {
-	ProjectID        string     `yaml:"project_id"`
-	FolderSeparator  string     `yaml:"folder_separator"`
-	Templates        []Template `yaml:"templates"`
-	RecentProjects   []string   `yaml:"recent_projects"`
+	ProjectID        string          `yaml:"project_id"`
+	FolderSeparator  string          `yaml:"folder_separator"`
+	Templates        []Template      `yaml:"templates"`
+	RecentProjects   []string        `yaml:"recent_projects"`
+	Clipboard        ClipboardConfig `yaml:"clipboard"`
 }
 
 // DefaultConfig returns a config with sensible defaults
@@ -27,6 +34,10 @@ func DefaultConfig() *Config {
 	return &Config{
 		ProjectID:       "",
 		FolderSeparator: "/",
+		Clipboard: ClipboardConfig{
+			AutoClear:      true,
+			TimeoutSeconds: 30,
+		},
 		Templates: []Template{
 			{
 				Title: "Bash Export",
