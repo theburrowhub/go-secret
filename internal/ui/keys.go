@@ -124,6 +124,7 @@ func ListViewBindings() []FooterBinding {
 		{Key: "n", Desc: "new"},
 		{Key: "d", Desc: "delete"},
 		{Key: "^R", Desc: "refresh"},
+		{Key: "^S", Desc: "settings"},
 		{Key: "^P", Desc: "project"},
 		{Key: "q", Desc: "quit"},
 	}
@@ -139,6 +140,7 @@ func DetailViewBindings() []FooterBinding {
 		{Key: "g", Desc: "generate"},
 		{Key: "d", Desc: "delete"},
 		{Key: "Esc/h", Desc: "back"},
+		{Key: "^S", Desc: "settings"},
 		{Key: "^P", Desc: "project"},
 		{Key: "q", Desc: "quit"},
 	}
@@ -228,8 +230,18 @@ func RevealViewBindings() []FooterBinding {
 	return []FooterBinding{
 		{Key: "c", Desc: "copy"},
 		{Key: "Esc/r", Desc: "hide"},
+		{Key: "^S", Desc: "settings"},
 		{Key: "^P", Desc: "project"},
 		{Key: "q", Desc: "quit"},
+	}
+}
+
+// ConfigSecurityBindings returns the keybindings for security settings
+func ConfigSecurityBindings() []FooterBinding {
+	return []FooterBinding{
+		{Key: "↑↓/jk", Desc: "navigate"},
+		{Key: "Enter/Space", Desc: "toggle"},
+		{Key: "Esc/h", Desc: "back"},
 	}
 }
 

@@ -36,6 +36,7 @@ const (
 	ViewConfigTemplates
 	ViewConfigTemplateEdit
 	ViewConfigRecentProjects
+	ViewConfigSecurity
 	ViewFilter
 	ViewReveal
 	ViewProjectSwitch
@@ -112,6 +113,9 @@ type Model struct {
 	
 	// Recent projects state
 	recentProjectsCursor int
+	
+	// Security settings state
+	securityCursor int
 	
 	// Project switch state
 	projectSwitchCursor   int
@@ -232,6 +236,7 @@ func NewModel(cfg *config.Config, projectID string) Model {
 		"📋 Basic Settings",
 		"📝 Code Templates",
 		"🕐 Recent Projects",
+		"🔒 Security Settings",
 		"💾 Save & Exit",
 	}
 	
@@ -439,6 +444,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateConfigTemplateEdit(msg)
 		case ViewConfigRecentProjects:
 			return m.updateConfigRecentProjects(msg)
+		case ViewConfigSecurity:
+			return m.updateConfigSecurity(msg)
 		case ViewFilter:
 			return m.updateFilter(msg)
 		case ViewReveal:
@@ -891,7 +898,10 @@ func (m Model) updateConfigMenu(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case 2: // Recent Projects
 			m.view = ViewConfigRecentProjects
 			m.recentProjectsCursor = 0
-		case 3: // Save & Exit
+		case 3: // Security Settings
+			m.view = ViewConfigSecurity
+			m.securityCursor = 0
+		case 4: // Save & Exit
 			_ = m.config.Save()
 			m.statusMsg = "Configuration saved"
 			m.statusErr = false
@@ -1081,6 +1091,50 @@ func (m Model) updateConfigRecentProjects(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.recentProjectsCursor--
 			}
 			m.statusMsg = "Project removed from history"
+			m.statusErr = false
+		}
+	case "esc", "backspace", "h":
+		m.view = ViewConfigMenu
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m Model) updateConfigSecurity(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Security options: 0 = Auto-clear clipboard, 1 = Timeout adjustment
+	maxOptions := 2
+	
+	switch msg.String() {
+	case "up", "k":
+		if m.securityCursor > 0 {
+			m.securityCursor--
+		}
+	case "down", "j":
+		if m.securityCursor < maxOptions-1 {
+			m.securityCursor++
+		}
+	case "enter", " ":
+		switch m.securityCursor {
+		case 0: // Toggle auto-clear
+			m.config.Clipboard.AutoClear = !m.config.Clipboard.AutoClear
+			if m.config.Clipboard.AutoClear {
+				m.statusMsg = "✓ Clipboard auto-clear enabled"
+			} else {
+				m.statusMsg = "○ Clipboard auto-clear disabled"
+			}
+			m.statusErr = false
+		case 1: // Cycle timeout (15, 30, 60, 120 seconds)
+			timeouts := []int{15, 30, 60, 120}
+			currentIdx := 0
+			for i, t := range timeouts {
+				if t == m.config.Clipboard.TimeoutSeconds {
+					currentIdx = i
+					break
+				}
+			}
+			nextIdx := (currentIdx + 1) % len(timeouts)
+			m.config.Clipboard.TimeoutSeconds = timeouts[nextIdx]
+			m.statusMsg = fmt.Sprintf("Timeout set to %d seconds", m.config.Clipboard.TimeoutSeconds)
 			m.statusErr = false
 		}
 	case "esc", "backspace", "h":
@@ -1396,6 +1450,9 @@ func (m Model) View() string {
 	case ViewConfigRecentProjects:
 		content = m.viewConfigRecentProjects()
 		footer = ConfigRecentBindings()
+	case ViewConfigSecurity:
+		content = m.viewConfigSecurity()
+		footer = ConfigSecurityBindings()
 	case ViewFilter:
 		content = m.viewFilter()
 		footer = InputViewBindings()
@@ -1881,6 +1938,48 @@ func (m Model) viewConfigRecentProjects() string {
 	b.WriteString(m.styles.SubtleText().Render("Press Enter to switch, d to remove"))
 	
 	return b.String()
+}
+
+func (m Model) viewConfigSecurity() string {
+	var b strings.Builder
+	
+	b.WriteString(m.styles.DialogTitle.Render("🔒 Security Settings"))
+	b.WriteString("\n\n")
+	
+	// Option 0: Auto-clear clipboard
+	autoClearIcon := "○"
+	autoClearStatus := "Disabled"
+	if m.config.Clipboard.AutoClear {
+		autoClearIcon = "✓"
+		autoClearStatus = "Enabled"
+	}
+	line0 := fmt.Sprintf("%s Auto-clear clipboard: %s", autoClearIcon, autoClearStatus)
+	if m.securityCursor == 0 {
+		line0 = m.styles.ListSelected.Width(55).Render("▶ " + line0)
+	} else {
+		line0 = m.styles.ListItem.Width(55).Render("  " + line0)
+	}
+	b.WriteString(line0)
+	b.WriteString("\n")
+	
+	// Option 1: Timeout
+	line1 := fmt.Sprintf("⏱  Clear timeout: %d seconds", m.config.Clipboard.TimeoutSeconds)
+	if m.securityCursor == 1 {
+		line1 = m.styles.ListSelected.Width(55).Render("▶ " + line1)
+	} else {
+		line1 = m.styles.ListItem.Width(55).Render("  " + line1)
+	}
+	b.WriteString(line1)
+	b.WriteString("\n\n")
+	
+	// Help text
+	b.WriteString(m.styles.SubtleText().Render("When enabled, clipboard will be automatically cleared"))
+	b.WriteString("\n")
+	b.WriteString(m.styles.SubtleText().Render("after copying a secret value."))
+	b.WriteString("\n\n")
+	b.WriteString(m.styles.SubtleText().Render("Press Enter/Space to toggle, ↑↓ to navigate"))
+	
+	return m.styles.Dialog.Render(b.String())
 }
 
 func (m Model) viewProjectSwitch() string {
