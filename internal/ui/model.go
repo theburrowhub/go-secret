@@ -42,6 +42,7 @@ const (
 	ViewFilter
 	ViewReveal
 	ViewProjectSwitch
+	ViewLocked
 )
 
 // FolderItem represents either a folder or a secret in the tree view
@@ -148,6 +149,11 @@ type Model struct {
 	
 	// Audit logger
 	auditLogger *audit.Logger
+	
+	// Session management state
+	lastActivity    time.Time
+	sessionLocked   bool
+	lockedPrevView  View
 }
 
 // Messages
@@ -197,6 +203,8 @@ type clientInitializedMsg struct {
 type clipboardClearMsg struct{}
 
 type clipboardTickMsg time.Time
+
+type sessionTimeoutMsg time.Time
 
 // NewModel creates a new application model
 func NewModel(cfg *config.Config, projectID string) Model {
@@ -296,15 +304,21 @@ func NewModel(cfg *config.Config, projectID string) Model {
 		loading:            initialView == ViewList,
 		loadingMsg:         "Loading secrets...",
 		auditLogger:        auditLogger,
+		lastActivity:       time.Now(),
 	}
 }
 
 // Init initializes the model
 func (m Model) Init() tea.Cmd {
+	cmds := []tea.Cmd{sessionTimeoutTickCmd()}
+	
 	if m.view == ViewProjectPrompt {
-		return textinput.Blink
+		cmds = append(cmds, textinput.Blink)
+	} else {
+		cmds = append(cmds, m.initializeClient())
 	}
-	return m.initializeClient()
+	
+	return tea.Batch(cmds...)
 }
 
 func (m Model) initializeClient() tea.Cmd {
@@ -392,6 +406,13 @@ func clearClipboardCmd() tea.Cmd {
 	}
 }
 
+// sessionTimeoutTickCmd returns a command that checks for session timeout
+func sessionTimeoutTickCmd() tea.Cmd {
+	return tea.Tick(30*time.Second, func(t time.Time) tea.Msg {
+		return sessionTimeoutMsg(t)
+	})
+}
+
 // setRevealedValue securely sets the revealed secret value
 func (m *Model) setRevealedValue(value []byte) {
 	// Clear old value first
@@ -425,6 +446,12 @@ func (m *Model) getRevealedValueString() string {
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 	
+	// Track user activity for session timeout
+	switch msg.(type) {
+	case tea.KeyMsg, tea.MouseMsg:
+		m.lastActivity = time.Now()
+	}
+	
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		// Global quit
@@ -432,8 +459,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 		
+		// If session is locked, only handle unlock
+		if m.sessionLocked {
+			return m.updateLocked(msg)
+		}
+		
 		// Global project switch (Ctrl+P) - available from most views
-		if msg.String() == "ctrl+p" && m.view != ViewProjectPrompt && m.view != ViewProjectSwitch {
+		if msg.String() == "ctrl+p" && m.view != ViewProjectPrompt && m.view != ViewProjectSwitch && m.view != ViewLocked {
 			m.projectSwitchPrevView = m.view
 			m.view = ViewProjectSwitch
 			m.projectSwitchCursor = 0
@@ -478,6 +510,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateReveal(msg)
 		case ViewProjectSwitch:
 			return m.updateProjectSwitch(msg)
+		case ViewLocked:
+			return m.updateLocked(msg)
 		}
 		
 	case tea.WindowSizeMsg:
@@ -652,6 +686,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.auditLogger != nil {
 			m.auditLogger.LogClipboardClear()
 		}
+		
+	case sessionTimeoutMsg:
+		// Check if session timeout is enabled and if we should lock
+		if m.config.Session.InactivityTimeout > 0 && m.config.Session.LockOnTimeout {
+			timeout := time.Duration(m.config.Session.InactivityTimeout) * time.Minute
+			if time.Since(m.lastActivity) > timeout && !m.sessionLocked {
+				m.sessionLocked = true
+				m.lockedPrevView = m.view
+				m.view = ViewLocked
+				// Clear sensitive data when locking
+				m.clearRevealedValue()
+				// Clear clipboard if active
+				if m.clipboardActive {
+					_ = clipboard.Clear()
+					m.clipboardActive = false
+				}
+				if m.auditLogger != nil {
+					m.auditLogger.LogSessionLock(m.config.ProjectID, "inactivity_timeout")
+				}
+			}
+		}
+		// Continue checking
+		cmds = append(cmds, sessionTimeoutTickCmd())
 	}
 	
 	return m, tea.Batch(cmds...)
@@ -1172,7 +1229,8 @@ func (m Model) updateConfigRecentProjects(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) updateConfigSecurity(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Security options: 0 = Auto-clear, 1 = Timeout, 2 = Audit enabled, 3 = Retention, 4 = View logs
-	maxOptions := 5
+	// 5 = Lock on timeout, 6 = Inactivity timeout
+	maxOptions := 7
 	
 	switch msg.String() {
 	case "up", "k":
@@ -1252,6 +1310,31 @@ func (m Model) updateConfigSecurity(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.loadAuditLogs()
 			m.view = ViewAuditLog
 			return m, nil
+		case 5: // Toggle lock on timeout
+			m.config.Session.LockOnTimeout = !m.config.Session.LockOnTimeout
+			if m.config.Session.LockOnTimeout {
+				m.statusMsg = "✓ Session lock on timeout enabled"
+			} else {
+				m.statusMsg = "○ Session lock on timeout disabled"
+			}
+			m.statusErr = false
+		case 6: // Cycle inactivity timeout (0=disabled, 5, 10, 15, 30, 60 minutes)
+			timeouts := []int{0, 5, 10, 15, 30, 60}
+			currentIdx := 0
+			for i, t := range timeouts {
+				if t == m.config.Session.InactivityTimeout {
+					currentIdx = i
+					break
+				}
+			}
+			nextIdx := (currentIdx + 1) % len(timeouts)
+			m.config.Session.InactivityTimeout = timeouts[nextIdx]
+			if m.config.Session.InactivityTimeout == 0 {
+				m.statusMsg = "Inactivity timeout: Disabled"
+			} else {
+				m.statusMsg = fmt.Sprintf("Inactivity timeout: %d minutes", m.config.Session.InactivityTimeout)
+			}
+			m.statusErr = false
 		}
 	case "esc", "backspace", "h":
 		m.view = ViewConfigMenu
@@ -1304,6 +1387,25 @@ func (m Model) updateAuditLog(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc", "backspace", "h":
 		m.view = ViewConfigSecurity
 		return m, nil
+	}
+	return m, nil
+}
+
+func (m Model) updateLocked(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "enter", " ":
+		// Unlock session
+		m.sessionLocked = false
+		m.view = m.lockedPrevView
+		m.lastActivity = time.Now()
+		if m.auditLogger != nil {
+			m.auditLogger.LogSessionUnlock(m.config.ProjectID)
+		}
+		m.statusMsg = "🔓 Session unlocked"
+		m.statusErr = false
+		return m, nil
+	case "q":
+		return m, tea.Quit
 	}
 	return m, nil
 }
@@ -1633,6 +1735,9 @@ func (m Model) View() string {
 	case ViewProjectSwitch:
 		content = m.viewProjectSwitch()
 		footer = ProjectSwitchBindings()
+	case ViewLocked:
+		content = m.viewLocked()
+		footer = LockedViewBindings()
 	}
 	
 	return m.renderLayout(content, footer)
@@ -1684,7 +1789,7 @@ func (m Model) renderLayout(content string, footerBindings []FooterBinding) stri
 
 func (m Model) viewProjectPrompt() string {
 	if m.loading {
-		return m.styles.StatusInfo.Render(m.loadingMsg)
+		return m.viewSplash(m.loadingMsg, "⏳", "GCP Secret Manager TUI")
 	}
 	
 	var b strings.Builder
@@ -1710,7 +1815,7 @@ func (m Model) viewProjectPrompt() string {
 
 func (m Model) viewList() string {
 	if m.loading {
-		return m.styles.StatusInfo.Render(m.loadingMsg)
+		return m.viewSplash(m.loadingMsg, "⏳", "")
 	}
 	
 	var b strings.Builder
@@ -1789,7 +1894,7 @@ func (m Model) viewList() string {
 
 func (m Model) viewDetail() string {
 	if m.loading {
-		return m.styles.StatusInfo.Render(m.loadingMsg)
+		return m.viewSplash(m.loadingMsg, "⏳", "")
 	}
 	
 	if m.selectedSecret == nil {
@@ -2187,6 +2292,40 @@ func (m Model) viewConfigSecurity() string {
 	b.WriteString(line4)
 	b.WriteString("\n\n")
 	
+	// Section: Session Security
+	b.WriteString(m.styles.InputLabel.Render("⏰ Session Security"))
+	b.WriteString("\n")
+	
+	// Option 5: Session lock enabled
+	lockIcon := "○"
+	lockStatus := "Disabled"
+	if m.config.Session.LockOnTimeout {
+		lockIcon = "✓"
+		lockStatus = "Enabled"
+	}
+	line5 := fmt.Sprintf("%s Lock on timeout: %s", lockIcon, lockStatus)
+	if m.securityCursor == 5 {
+		line5 = m.styles.ListSelected.Width(55).Render("▶ " + line5)
+	} else {
+		line5 = m.styles.ListItem.Width(55).Render("  " + line5)
+	}
+	b.WriteString(line5)
+	b.WriteString("\n")
+	
+	// Option 6: Inactivity timeout
+	timeoutText := "Disabled"
+	if m.config.Session.InactivityTimeout > 0 {
+		timeoutText = fmt.Sprintf("%d minutes", m.config.Session.InactivityTimeout)
+	}
+	line6 := fmt.Sprintf("⏱  Inactivity timeout: %s", timeoutText)
+	if m.securityCursor == 6 {
+		line6 = m.styles.ListSelected.Width(55).Render("▶ " + line6)
+	} else {
+		line6 = m.styles.ListItem.Width(55).Render("  " + line6)
+	}
+	b.WriteString(line6)
+	b.WriteString("\n\n")
+	
 	// Show audit log path if enabled
 	if m.config.Audit.Enabled && m.auditLogger != nil {
 		logPath := m.auditLogger.GetFilePath()
@@ -2249,6 +2388,58 @@ func (m Model) viewAuditLog() string {
 	}
 	
 	return b.String()
+}
+
+// ASCII art logo for splash screens
+const asciiLogo = `
+ ▄▄▄▄▄▄▄▄▄▄▄  ▄▄▄▄▄▄▄▄▄▄▄       ▄▄▄▄▄▄▄▄▄▄▄  ▄▄▄▄▄▄▄▄▄▄▄  ▄▄▄▄▄▄▄▄▄▄▄  ▄▄▄▄▄▄▄▄▄▄▄  ▄▄▄▄▄▄▄▄▄▄▄  ▄▄▄▄▄▄▄▄▄▄▄ 
+▐░░░░░░░░░░░▌▐░░░░░░░░░░░▌     ▐░░░░░░░░░░░▌▐░░░░░░░░░░░▌▐░░░░░░░░░░░▌▐░░░░░░░░░░░▌▐░░░░░░░░░░░▌▐░░░░░░░░░░░▌
+▐░█▀▀▀▀▀▀▀▀▀ ▐░█▀▀▀▀▀▀▀█░▌     ▐░█▀▀▀▀▀▀▀▀▀ ▐░█▀▀▀▀▀▀▀▀▀ ▐░█▀▀▀▀▀▀▀▀▀ ▐░█▀▀▀▀▀▀▀█░▌▐░█▀▀▀▀▀▀▀▀▀  ▀▀▀▀█░█▀▀▀▀ 
+▐░▌          ▐░▌       ▐░▌     ▐░▌          ▐░▌          ▐░▌          ▐░▌       ▐░▌▐░▌               ▐░▌     
+▐░▌ ▄▄▄▄▄▄▄▄ ▐░▌       ▐░▌     ▐░█▄▄▄▄▄▄▄▄▄ ▐░█▄▄▄▄▄▄▄▄▄ ▐░▌          ▐░█▄▄▄▄▄▄▄█░▌▐░█▄▄▄▄▄▄▄▄▄      ▐░▌     
+▐░▌▐░░░░░░░░▌▐░▌       ▐░▌     ▐░░░░░░░░░░░▌▐░░░░░░░░░░░▌▐░▌          ▐░░░░░░░░░░░▌▐░░░░░░░░░░░▌     ▐░▌     
+▐░▌ ▀▀▀▀▀▀█░▌▐░▌       ▐░▌      ▀▀▀▀▀▀▀▀▀█░▌▐░█▀▀▀▀▀▀▀▀▀ ▐░▌          ▐░█▀▀▀▀█░█▀▀ ▐░█▀▀▀▀▀▀▀▀▀      ▐░▌     
+▐░▌       ▐░▌▐░▌       ▐░▌               ▐░▌▐░▌          ▐░▌          ▐░▌     ▐░▌  ▐░▌               ▐░▌     
+▐░█▄▄▄▄▄▄▄█░▌▐░█▄▄▄▄▄▄▄█░▌      ▄▄▄▄▄▄▄▄▄█░▌▐░█▄▄▄▄▄▄▄▄▄ ▐░█▄▄▄▄▄▄▄▄▄ ▐░▌      ▐░▌ ▐░█▄▄▄▄▄▄▄▄▄      ▐░▌     
+▐░░░░░░░░░░░▌▐░░░░░░░░░░░▌     ▐░░░░░░░░░░░▌▐░░░░░░░░░░░▌▐░░░░░░░░░░░▌▐░▌       ▐░▌▐░░░░░░░░░░░▌     ▐░▌     
+ ▀▀▀▀▀▀▀▀▀▀▀  ▀▀▀▀▀▀▀▀▀▀▀       ▀▀▀▀▀▀▀▀▀▀▀  ▀▀▀▀▀▀▀▀▀▀▀  ▀▀▀▀▀▀▀▀▀▀▀  ▀         ▀  ▀▀▀▀▀▀▀▀▀▀▀       ▀      
+`
+
+func (m Model) viewSplash(message string, icon string, subtitle string) string {
+	var b strings.Builder
+	
+	// Center the logo
+	logoStyle := lipgloss.NewStyle().
+		Foreground(ColorOrange).
+		Bold(true)
+	
+	b.WriteString(logoStyle.Render(asciiLogo))
+	b.WriteString("\n")
+	
+	// Icon and message centered
+	if icon != "" {
+		iconMsg := fmt.Sprintf("%s  %s", icon, message)
+		msgStyle := lipgloss.NewStyle().
+			Foreground(ColorText).
+			Bold(true)
+		b.WriteString(msgStyle.Render(iconMsg))
+		b.WriteString("\n\n")
+	}
+	
+	// Subtitle
+	if subtitle != "" {
+		subtitleStyle := lipgloss.NewStyle().
+			Foreground(ColorTextMuted)
+		b.WriteString(subtitleStyle.Render(subtitle))
+	}
+	
+	return b.String()
+}
+
+func (m Model) viewLocked() string {
+	timeout := m.config.Session.InactivityTimeout
+	subtitle := fmt.Sprintf("Session locked after %d minutes of inactivity\n\n⚠️  Sensitive data cleared from memory\n\nPress ENTER or SPACE to unlock", timeout)
+	return m.viewSplash("SESSION LOCKED", "🔒", subtitle)
 }
 
 func (m Model) viewProjectSwitch() string {

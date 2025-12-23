@@ -255,3 +255,11 @@ func AuditLogBindings() []FooterBinding {
 	}
 }
 
+// LockedViewBindings returns the keybindings for the locked view
+func LockedViewBindings() []FooterBinding {
+	return []FooterBinding{
+		{Key: "Enter/Space", Desc: "unlock"},
+		{Key: "q", Desc: "quit"},
+	}
+}
+

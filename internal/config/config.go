@@ -28,6 +28,12 @@ type AuditConfig struct {
 	MaxAgeDays int    `yaml:"max_age_days"`
 }
 
+// SessionConfig holds session security settings
+type SessionConfig struct {
+	InactivityTimeout int  `yaml:"inactivity_timeout"` // Minutes, 0 = disabled
+	LockOnTimeout     bool `yaml:"lock_on_timeout"`
+}
+
 // Config holds the application configuration
 type Config struct {
 	ProjectID        string          `yaml:"project_id"`
@@ -36,6 +42,7 @@ type Config struct {
 	RecentProjects   []string        `yaml:"recent_projects"`
 	Clipboard        ClipboardConfig `yaml:"clipboard"`
 	Audit            AuditConfig     `yaml:"audit"`
+	Session          SessionConfig   `yaml:"session"`
 }
 
 // DefaultConfig returns a config with sensible defaults
@@ -52,6 +59,10 @@ func DefaultConfig() *Config {
 			FilePath:   "", // Uses default path
 			MaxSizeMB:  10,
 			MaxAgeDays: 90,
+		},
+		Session: SessionConfig{
+			InactivityTimeout: 15, // 15 minutes default
+			LockOnTimeout:     true,
 		},
 		Templates: []Template{
 			{

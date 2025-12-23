@@ -30,8 +30,10 @@ const (
 	EventProjectSwitch EventType = "PROJECT_SWITCH"
 
 	// Session events
-	EventSessionStart EventType = "SESSION_START"
-	EventSessionEnd   EventType = "SESSION_END"
+	EventSessionStart  EventType = "SESSION_START"
+	EventSessionEnd    EventType = "SESSION_END"
+	EventSessionLock   EventType = "SESSION_LOCK"
+	EventSessionUnlock EventType = "SESSION_UNLOCK"
 
 	// Security events
 	EventClipboardClear EventType = "CLIPBOARD_CLEAR"
@@ -340,6 +342,25 @@ func (l *Logger) LogClipboardClear() {
 	_ = l.Log(Event{
 		EventType: EventClipboardClear,
 		Result:    ResultSuccess,
+	})
+}
+
+// LogSessionLock logs a session lock event
+func (l *Logger) LogSessionLock(projectID, reason string) {
+	_ = l.Log(Event{
+		EventType: EventSessionLock,
+		Result:    ResultSuccess,
+		ProjectID: projectID,
+		Details:   map[string]string{"reason": reason},
+	})
+}
+
+// LogSessionUnlock logs a session unlock event
+func (l *Logger) LogSessionUnlock(projectID string) {
+	_ = l.Log(Event{
+		EventType: EventSessionUnlock,
+		Result:    ResultSuccess,
+		ProjectID: projectID,
 	})
 }
 
