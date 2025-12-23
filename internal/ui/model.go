@@ -15,6 +15,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/theburrowhub/go-secret/internal/audit"
 	"github.com/theburrowhub/go-secret/internal/config"
 	"github.com/theburrowhub/go-secret/internal/gcp"
 )
@@ -37,6 +38,7 @@ const (
 	ViewConfigTemplateEdit
 	ViewConfigRecentProjects
 	ViewConfigSecurity
+	ViewAuditLog
 	ViewFilter
 	ViewReveal
 	ViewProjectSwitch
@@ -117,6 +119,10 @@ type Model struct {
 	// Security settings state
 	securityCursor int
 	
+	// Audit log viewer state
+	auditLogLines  []string
+	auditLogOffset int
+	
 	// Project switch state
 	projectSwitchCursor   int
 	projectSwitchInput    textinput.Model
@@ -139,6 +145,9 @@ type Model struct {
 	// Clipboard auto-clear state
 	clipboardClearAt time.Time
 	clipboardActive  bool
+	
+	// Audit logger
+	auditLogger *audit.Logger
 }
 
 // Messages
@@ -153,11 +162,13 @@ type versionsLoadedMsg struct {
 }
 
 type secretCreatedMsg struct {
-	err error
+	name string
+	err  error
 }
 
 type secretDeletedMsg struct {
-	err error
+	name string
+	err  error
 }
 
 type versionAddedMsg struct {
@@ -166,13 +177,16 @@ type versionAddedMsg struct {
 }
 
 type secretValueMsg struct {
-	value   []byte
-	version string
-	err     error
+	secretName string
+	value      []byte
+	version    string
+	err        error
 }
 
 type secretCopiedMsg struct {
-	err error
+	secretName string
+	version    string
+	err        error
 }
 
 type clientInitializedMsg struct {
@@ -254,6 +268,15 @@ func NewModel(cfg *config.Config, projectID string) Model {
 		cfg.ProjectID = projectID
 	}
 	
+	// Initialize audit logger
+	auditCfg := audit.Config{
+		Enabled:    cfg.Audit.Enabled,
+		FilePath:   cfg.Audit.FilePath,
+		MaxSizeMB:  cfg.Audit.MaxSizeMB,
+		MaxAgeDays: cfg.Audit.MaxAgeDays,
+	}
+	auditLogger, _ := audit.NewLogger(auditCfg)
+	
 	return Model{
 		config:             cfg,
 		ctx:                context.Background(),
@@ -272,6 +295,7 @@ func NewModel(cfg *config.Config, projectID string) Model {
 		currentPath:        []string{},
 		loading:            initialView == ViewList,
 		loadingMsg:         "Loading secrets...",
+		auditLogger:        auditLogger,
 	}
 }
 
@@ -310,7 +334,7 @@ func (m Model) loadVersions(secretName string) tea.Cmd {
 func (m Model) accessSecretVersion(secretName, version string) tea.Cmd {
 	return func() tea.Msg {
 		value, err := m.client.AccessSecretVersion(m.ctx, secretName, version)
-		return secretValueMsg{value: value, version: version, err: err}
+		return secretValueMsg{secretName: secretName, value: value, version: version, err: err}
 	}
 }
 
@@ -318,20 +342,20 @@ func (m Model) createSecret(name string, value []byte) tea.Cmd {
 	return func() tea.Msg {
 		err := m.client.CreateSecret(m.ctx, name, nil)
 		if err != nil {
-			return secretCreatedMsg{err: err}
+			return secretCreatedMsg{name: name, err: err}
 		}
 		
 		if len(value) > 0 {
 			_, err = m.client.AddSecretVersion(m.ctx, name, value)
 		}
-		return secretCreatedMsg{err: err}
+		return secretCreatedMsg{name: name, err: err}
 	}
 }
 
 func (m Model) deleteSecret(name string) tea.Cmd {
 	return func() tea.Msg {
 		err := m.client.DeleteSecret(m.ctx, name)
-		return secretDeletedMsg{err: err}
+		return secretDeletedMsg{name: name, err: err}
 	}
 }
 
@@ -346,10 +370,10 @@ func (m Model) copySecretValue(secretName, version string) tea.Cmd {
 	return func() tea.Msg {
 		value, err := m.client.AccessSecretVersion(m.ctx, secretName, version)
 		if err != nil {
-			return secretCopiedMsg{err: err}
+			return secretCopiedMsg{secretName: secretName, version: version, err: err}
 		}
 		err = clipboard.WriteAll(string(value))
-		return secretCopiedMsg{err: err}
+		return secretCopiedMsg{secretName: secretName, version: version, err: err}
 	}
 }
 
@@ -446,6 +470,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateConfigRecentProjects(msg)
 		case ViewConfigSecurity:
 			return m.updateConfigSecurity(msg)
+		case ViewAuditLog:
+			return m.updateAuditLog(msg)
 		case ViewFilter:
 			return m.updateFilter(msg)
 		case ViewReveal:
@@ -467,6 +493,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.client = msg.client
+		if m.auditLogger != nil {
+			// Set the authenticated user in audit logger
+			m.auditLogger.SetUser(msg.client.UserEmail())
+			m.auditLogger.LogSessionStart(m.config.ProjectID)
+		}
 		m.loading = true
 		m.loadingMsg = "Loading secrets..."
 		return m, m.loadSecrets()
@@ -476,6 +507,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.statusMsg = fmt.Sprintf("Error loading secrets: %v", msg.err)
 			m.statusErr = true
+			if m.auditLogger != nil {
+				m.auditLogger.LogSecretList(m.config.ProjectID, 0, audit.ResultFailure, msg.err.Error())
+			}
 			return m, nil
 		}
 		m.secrets = msg.secrets
@@ -483,6 +517,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateDisplayItems()
 		m.statusMsg = fmt.Sprintf("Loaded %d secrets", len(m.secrets))
 		m.statusErr = false
+		if m.auditLogger != nil {
+			m.auditLogger.LogSecretList(m.config.ProjectID, len(m.secrets), audit.ResultSuccess, "")
+		}
 		
 	case versionsLoadedMsg:
 		m.loading = false
@@ -498,10 +535,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.statusMsg = fmt.Sprintf("Error creating secret: %v", msg.err)
 			m.statusErr = true
+			if m.auditLogger != nil {
+				m.auditLogger.LogSecretCreate(m.config.ProjectID, msg.name, audit.ResultFailure, msg.err.Error())
+			}
 			return m, nil
 		}
 		m.statusMsg = "Secret created successfully"
 		m.statusErr = false
+		if m.auditLogger != nil {
+			m.auditLogger.LogSecretCreate(m.config.ProjectID, msg.name, audit.ResultSuccess, "")
+		}
 		m.view = ViewList
 		return m, m.loadSecrets()
 		
@@ -510,10 +553,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.statusMsg = fmt.Sprintf("Error deleting secret: %v", msg.err)
 			m.statusErr = true
+			if m.auditLogger != nil {
+				m.auditLogger.LogSecretDelete(m.config.ProjectID, msg.name, audit.ResultFailure, msg.err.Error())
+			}
 			return m, nil
 		}
 		m.statusMsg = "Secret deleted successfully"
 		m.statusErr = false
+		if m.auditLogger != nil {
+			m.auditLogger.LogSecretDelete(m.config.ProjectID, msg.name, audit.ResultSuccess, "")
+		}
 		m.view = ViewList
 		m.selectedSecret = nil
 		return m, m.loadSecrets()
@@ -523,10 +572,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.statusMsg = fmt.Sprintf("Error adding version: %v", msg.err)
 			m.statusErr = true
+			if m.auditLogger != nil && m.selectedSecret != nil {
+				m.auditLogger.LogVersionAdd(m.config.ProjectID, m.selectedSecret.Name, "", audit.ResultFailure, msg.err.Error())
+			}
 			return m, nil
 		}
 		m.statusMsg = fmt.Sprintf("Version %s added successfully", msg.version.Name)
 		m.statusErr = false
+		if m.auditLogger != nil && m.selectedSecret != nil {
+			m.auditLogger.LogVersionAdd(m.config.ProjectID, m.selectedSecret.Name, msg.version.Name, audit.ResultSuccess, "")
+		}
 		m.view = ViewDetail
 		return m, m.loadVersions(m.selectedSecret.Name)
 		
@@ -535,6 +590,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.statusMsg = fmt.Sprintf("Error accessing secret: %v", msg.err)
 			m.statusErr = true
+			if m.auditLogger != nil {
+				m.auditLogger.LogSecretReveal(m.config.ProjectID, msg.secretName, msg.version, audit.ResultFailure, msg.err.Error())
+			}
 			return m, nil
 		}
 		// Securely store the secret value
@@ -545,13 +603,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.revealVersion = msg.version
 		m.view = ViewReveal
+		if m.auditLogger != nil {
+			m.auditLogger.LogSecretReveal(m.config.ProjectID, msg.secretName, msg.version, audit.ResultSuccess, "")
+		}
 		
 	case secretCopiedMsg:
 		m.loading = false
 		if msg.err != nil {
 			m.statusMsg = fmt.Sprintf("Error copying: %v", msg.err)
 			m.statusErr = true
+			if m.auditLogger != nil {
+				m.auditLogger.LogSecretCopy(m.config.ProjectID, msg.secretName, msg.version, audit.ResultFailure, msg.err.Error())
+			}
 			return m, nil
+		}
+		if m.auditLogger != nil {
+			m.auditLogger.LogSecretCopy(m.config.ProjectID, msg.secretName, msg.version, audit.ResultSuccess, "")
 		}
 		// Start clipboard auto-clear timer if enabled
 		if m.config.Clipboard.AutoClear && m.config.Clipboard.TimeoutSeconds > 0 {
@@ -582,6 +649,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.clipboardActive = false
 		m.statusMsg = "🔒 Clipboard cleared"
 		m.statusErr = false
+		if m.auditLogger != nil {
+			m.auditLogger.LogClipboardClear()
+		}
 	}
 	
 	return m, tea.Batch(cmds...)
@@ -1101,8 +1171,8 @@ func (m Model) updateConfigRecentProjects(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateConfigSecurity(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// Security options: 0 = Auto-clear clipboard, 1 = Timeout adjustment
-	maxOptions := 2
+	// Security options: 0 = Auto-clear, 1 = Timeout, 2 = Audit enabled, 3 = Retention, 4 = View logs
+	maxOptions := 5
 	
 	switch msg.String() {
 	case "up", "k":
@@ -1123,7 +1193,7 @@ func (m Model) updateConfigSecurity(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.statusMsg = "○ Clipboard auto-clear disabled"
 			}
 			m.statusErr = false
-		case 1: // Cycle timeout (15, 30, 60, 120 seconds)
+		case 1: // Cycle clipboard timeout (15, 30, 60, 120 seconds)
 			timeouts := []int{15, 30, 60, 120}
 			currentIdx := 0
 			for i, t := range timeouts {
@@ -1134,11 +1204,105 @@ func (m Model) updateConfigSecurity(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			nextIdx := (currentIdx + 1) % len(timeouts)
 			m.config.Clipboard.TimeoutSeconds = timeouts[nextIdx]
-			m.statusMsg = fmt.Sprintf("Timeout set to %d seconds", m.config.Clipboard.TimeoutSeconds)
+			m.statusMsg = fmt.Sprintf("Clipboard timeout: %d seconds", m.config.Clipboard.TimeoutSeconds)
 			m.statusErr = false
+		case 2: // Toggle audit logging
+			oldEnabled := m.config.Audit.Enabled
+			m.config.Audit.Enabled = !m.config.Audit.Enabled
+			if m.config.Audit.Enabled {
+				m.statusMsg = "✓ Audit logging enabled"
+				// Reinitialize audit logger
+				auditCfg := audit.Config{
+					Enabled:    true,
+					FilePath:   m.config.Audit.FilePath,
+					MaxSizeMB:  m.config.Audit.MaxSizeMB,
+					MaxAgeDays: m.config.Audit.MaxAgeDays,
+				}
+				if newLogger, err := audit.NewLogger(auditCfg); err == nil {
+					if m.auditLogger != nil {
+						m.auditLogger.Close()
+					}
+					m.auditLogger = newLogger
+				}
+			} else {
+				m.statusMsg = "○ Audit logging disabled"
+				if m.auditLogger != nil {
+					m.auditLogger.Close()
+					m.auditLogger = nil
+				}
+			}
+			if m.auditLogger != nil && oldEnabled != m.config.Audit.Enabled {
+				m.auditLogger.LogConfigChange("audit.enabled", fmt.Sprintf("%v", oldEnabled), fmt.Sprintf("%v", m.config.Audit.Enabled))
+			}
+			m.statusErr = false
+		case 3: // Cycle audit retention (30, 60, 90, 180, 365 days)
+			retentions := []int{30, 60, 90, 180, 365}
+			currentIdx := 0
+			for i, r := range retentions {
+				if r == m.config.Audit.MaxAgeDays {
+					currentIdx = i
+					break
+				}
+			}
+			nextIdx := (currentIdx + 1) % len(retentions)
+			m.config.Audit.MaxAgeDays = retentions[nextIdx]
+			m.statusMsg = fmt.Sprintf("Audit retention: %d days", m.config.Audit.MaxAgeDays)
+			m.statusErr = false
+		case 4: // View audit logs
+			m.loadAuditLogs()
+			m.view = ViewAuditLog
+			return m, nil
 		}
 	case "esc", "backspace", "h":
 		m.view = ViewConfigMenu
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m *Model) loadAuditLogs() {
+	if m.auditLogger != nil {
+		lines, err := m.auditLogger.ReadRecentLogs(500)
+		if err == nil {
+			m.auditLogLines = lines
+		} else {
+			m.auditLogLines = []string{"Error reading logs: " + err.Error()}
+		}
+	} else {
+		m.auditLogLines = []string{"Audit logging is disabled"}
+	}
+	m.auditLogOffset = 0
+}
+
+func (m Model) updateAuditLog(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	visibleLines := m.height - 12
+	if visibleLines < 5 {
+		visibleLines = 5
+	}
+	maxOffset := len(m.auditLogLines) - visibleLines
+	if maxOffset < 0 {
+		maxOffset = 0
+	}
+
+	switch msg.String() {
+	case "up", "k":
+		if m.auditLogOffset > 0 {
+			m.auditLogOffset--
+		}
+	case "down", "j":
+		if m.auditLogOffset < maxOffset {
+			m.auditLogOffset++
+		}
+	case "g":
+		m.auditLogOffset = 0
+	case "G":
+		m.auditLogOffset = maxOffset
+	case "r":
+		m.loadAuditLogs()
+		m.statusMsg = "Logs refreshed"
+		m.statusErr = false
+	case "esc", "backspace", "h":
+		m.view = ViewConfigSecurity
 		return m, nil
 	}
 	return m, nil
@@ -1186,9 +1350,13 @@ func (m Model) updateProjectSwitch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		
 		if selectedProject != "" && selectedProject != m.config.ProjectID {
+			oldProject := m.config.ProjectID
 			m.config.ProjectID = selectedProject
 			m.config.AddRecentProject(selectedProject)
 			_ = m.config.Save()
+			if m.auditLogger != nil {
+				m.auditLogger.LogProjectSwitch(oldProject, selectedProject)
+			}
 			m.statusMsg = fmt.Sprintf("Switched to: %s", selectedProject)
 			m.statusErr = false
 			m.view = ViewList
@@ -1453,6 +1621,9 @@ func (m Model) View() string {
 	case ViewConfigSecurity:
 		content = m.viewConfigSecurity()
 		footer = ConfigSecurityBindings()
+	case ViewAuditLog:
+		content = m.viewAuditLog()
+		footer = AuditLogBindings()
 	case ViewFilter:
 		content = m.viewFilter()
 		footer = InputViewBindings()
@@ -1946,6 +2117,10 @@ func (m Model) viewConfigSecurity() string {
 	b.WriteString(m.styles.DialogTitle.Render("🔒 Security Settings"))
 	b.WriteString("\n\n")
 	
+	// Section: Clipboard
+	b.WriteString(m.styles.InputLabel.Render("📋 Clipboard"))
+	b.WriteString("\n")
+	
 	// Option 0: Auto-clear clipboard
 	autoClearIcon := "○"
 	autoClearStatus := "Disabled"
@@ -1953,7 +2128,7 @@ func (m Model) viewConfigSecurity() string {
 		autoClearIcon = "✓"
 		autoClearStatus = "Enabled"
 	}
-	line0 := fmt.Sprintf("%s Auto-clear clipboard: %s", autoClearIcon, autoClearStatus)
+	line0 := fmt.Sprintf("%s Auto-clear: %s", autoClearIcon, autoClearStatus)
 	if m.securityCursor == 0 {
 		line0 = m.styles.ListSelected.Width(55).Render("▶ " + line0)
 	} else {
@@ -1962,7 +2137,7 @@ func (m Model) viewConfigSecurity() string {
 	b.WriteString(line0)
 	b.WriteString("\n")
 	
-	// Option 1: Timeout
+	// Option 1: Clipboard Timeout
 	line1 := fmt.Sprintf("⏱  Clear timeout: %d seconds", m.config.Clipboard.TimeoutSeconds)
 	if m.securityCursor == 1 {
 		line1 = m.styles.ListSelected.Width(55).Render("▶ " + line1)
@@ -1972,14 +2147,108 @@ func (m Model) viewConfigSecurity() string {
 	b.WriteString(line1)
 	b.WriteString("\n\n")
 	
-	// Help text
-	b.WriteString(m.styles.SubtleText().Render("When enabled, clipboard will be automatically cleared"))
+	// Section: Audit Logging
+	b.WriteString(m.styles.InputLabel.Render("📝 Audit Logging"))
 	b.WriteString("\n")
-	b.WriteString(m.styles.SubtleText().Render("after copying a secret value."))
+	
+	// Option 2: Audit enabled
+	auditIcon := "○"
+	auditStatus := "Disabled"
+	if m.config.Audit.Enabled {
+		auditIcon = "✓"
+		auditStatus = "Enabled"
+	}
+	line2 := fmt.Sprintf("%s Audit logging: %s", auditIcon, auditStatus)
+	if m.securityCursor == 2 {
+		line2 = m.styles.ListSelected.Width(55).Render("▶ " + line2)
+	} else {
+		line2 = m.styles.ListItem.Width(55).Render("  " + line2)
+	}
+	b.WriteString(line2)
+	b.WriteString("\n")
+	
+	// Option 3: Audit retention
+	line3 := fmt.Sprintf("📅 Log retention: %d days", m.config.Audit.MaxAgeDays)
+	if m.securityCursor == 3 {
+		line3 = m.styles.ListSelected.Width(55).Render("▶ " + line3)
+	} else {
+		line3 = m.styles.ListItem.Width(55).Render("  " + line3)
+	}
+	b.WriteString(line3)
+	b.WriteString("\n")
+	
+	// Option 4: View audit logs
+	line4 := "👁  View audit logs →"
+	if m.securityCursor == 4 {
+		line4 = m.styles.ListSelected.Width(55).Render("▶ " + line4)
+	} else {
+		line4 = m.styles.ListItem.Width(55).Render("  " + line4)
+	}
+	b.WriteString(line4)
 	b.WriteString("\n\n")
+	
+	// Show audit log path if enabled
+	if m.config.Audit.Enabled && m.auditLogger != nil {
+		logPath := m.auditLogger.GetFilePath()
+		if logPath != "" {
+			b.WriteString(m.styles.SubtleText().Render("Log: " + logPath))
+			b.WriteString("\n")
+		}
+	}
+	
+	b.WriteString("\n")
 	b.WriteString(m.styles.SubtleText().Render("Press Enter/Space to toggle, ↑↓ to navigate"))
 	
 	return m.styles.Dialog.Render(b.String())
+}
+
+func (m Model) viewAuditLog() string {
+	var b strings.Builder
+	
+	b.WriteString(m.styles.DialogTitle.Render("📜 Audit Log Viewer"))
+	b.WriteString("\n\n")
+	
+	if len(m.auditLogLines) == 0 {
+		b.WriteString(m.styles.SubtleText().Render("No log entries found"))
+		b.WriteString("\n")
+	} else {
+		// Header
+		header := fmt.Sprintf("%-19s %s %-12s %-25s %-30s", "TIMESTAMP", "R", "EVENT", "USER", "SECRET")
+		b.WriteString(m.styles.InputLabel.Render(header))
+		b.WriteString("\n")
+		b.WriteString(m.styles.SubtleText().Render(strings.Repeat("─", 95)))
+		b.WriteString("\n")
+		
+		// Calculate visible lines
+		visibleLines := m.height - 12
+		if visibleLines < 5 {
+			visibleLines = 5
+		}
+		
+		// Show logs with offset
+		endIdx := m.auditLogOffset + visibleLines
+		if endIdx > len(m.auditLogLines) {
+			endIdx = len(m.auditLogLines)
+		}
+		
+		for i := m.auditLogOffset; i < endIdx; i++ {
+			line := m.auditLogLines[i]
+			formatted := audit.FormatLogEntry(line)
+			b.WriteString(formatted)
+			b.WriteString("\n")
+		}
+		
+		// Scroll indicator
+		b.WriteString("\n")
+		total := len(m.auditLogLines)
+		showing := endIdx - m.auditLogOffset
+		b.WriteString(m.styles.SubtleText().Render(
+			fmt.Sprintf("Showing %d-%d of %d entries (most recent first)", 
+				m.auditLogOffset+1, m.auditLogOffset+showing, total),
+		))
+	}
+	
+	return b.String()
 }
 
 func (m Model) viewProjectSwitch() string {

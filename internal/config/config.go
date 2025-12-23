@@ -20,6 +20,14 @@ type ClipboardConfig struct {
 	TimeoutSeconds int  `yaml:"timeout_seconds"`
 }
 
+// AuditConfig holds audit logging settings
+type AuditConfig struct {
+	Enabled    bool   `yaml:"enabled"`
+	FilePath   string `yaml:"file_path,omitempty"`
+	MaxSizeMB  int    `yaml:"max_size_mb"`
+	MaxAgeDays int    `yaml:"max_age_days"`
+}
+
 // Config holds the application configuration
 type Config struct {
 	ProjectID        string          `yaml:"project_id"`
@@ -27,6 +35,7 @@ type Config struct {
 	Templates        []Template      `yaml:"templates"`
 	RecentProjects   []string        `yaml:"recent_projects"`
 	Clipboard        ClipboardConfig `yaml:"clipboard"`
+	Audit            AuditConfig     `yaml:"audit"`
 }
 
 // DefaultConfig returns a config with sensible defaults
@@ -37,6 +46,12 @@ func DefaultConfig() *Config {
 		Clipboard: ClipboardConfig{
 			AutoClear:      true,
 			TimeoutSeconds: 30,
+		},
+		Audit: AuditConfig{
+			Enabled:    true,
+			FilePath:   "", // Uses default path
+			MaxSizeMB:  10,
+			MaxAgeDays: 90,
 		},
 		Templates: []Template{
 			{

@@ -245,3 +245,13 @@ func ConfigSecurityBindings() []FooterBinding {
 	}
 }
 
+// AuditLogBindings returns the keybindings for audit log viewer
+func AuditLogBindings() []FooterBinding {
+	return []FooterBinding{
+		{Key: "↑↓/jk", Desc: "scroll"},
+		{Key: "g/G", Desc: "top/bottom"},
+		{Key: "r", Desc: "refresh"},
+		{Key: "Esc/h", Desc: "back"},
+	}
+}
+
