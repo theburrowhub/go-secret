@@ -141,9 +141,12 @@ func GetConfigPath() (string, error) {
 	}
 
 	appDir := filepath.Join(configDir, "go-secrets")
-	if err := os.MkdirAll(appDir, 0755); err != nil {
+	// Use 0700 for directory - only owner can access
+	if err := os.MkdirAll(appDir, 0700); err != nil {
 		return "", err
 	}
+	// Fix permissions if directory already existed with insecure permissions
+	_ = os.Chmod(appDir, 0700)
 
 	return filepath.Join(appDir, "config.yaml"), nil
 }
@@ -155,11 +158,23 @@ func Load() (*Config, error) {
 		return DefaultConfig(), nil
 	}
 
-	data, err := os.ReadFile(configPath)
+	// Check if file exists and fix permissions if needed
+	info, err := os.Stat(configPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return DefaultConfig(), nil
 		}
+		return nil, err
+	}
+
+	// Fix insecure permissions on existing config file
+	mode := info.Mode().Perm()
+	if mode != 0600 {
+		_ = os.Chmod(configPath, 0600)
+	}
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
 		return nil, err
 	}
 
@@ -171,7 +186,7 @@ func Load() (*Config, error) {
 	return cfg, nil
 }
 
-// Save writes the config to disk
+// Save writes the config to disk with secure permissions
 func (c *Config) Save() error {
 	configPath, err := GetConfigPath()
 	if err != nil {
@@ -183,7 +198,14 @@ func (c *Config) Save() error {
 		return err
 	}
 
-	return os.WriteFile(configPath, data, 0644)
+	// Write with secure permissions - only owner can read/write (0600)
+	if err := os.WriteFile(configPath, data, 0600); err != nil {
+		return err
+	}
+
+	// Ensure directory also has secure permissions
+	configDir := filepath.Dir(configPath)
+	return os.Chmod(configDir, 0700)
 }
 
 // AddRecentProject adds a project to the saved projects list
