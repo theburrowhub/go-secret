@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>404 - Page Not Found | go-secret</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔐</text></svg>">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Outfit:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-primary: #1e1f22;
+            --bg-secondary: #2b2d30;
+            --text-primary: #bcbec4;
+            --text-secondary: #7a7e85;
+            --accent-purple: #9876aa;
+            --accent-blue: #6897bb;
+            --font-sans: 'Outfit', system-ui, sans-serif;
+            --font-mono: 'JetBrains Mono', monospace;
+        }
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: var(--font-sans);
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+            padding: 2rem;
+        }
+        
+        .error-code {
+            font-family: var(--font-mono);
+            font-size: 8rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, var(--accent-purple), var(--accent-blue));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            line-height: 1;
+            margin-bottom: 1rem;
+        }
+        
+        h1 {
+            font-size: 1.75rem;
+            margin-bottom: 1rem;
+        }
+        
+        p {
+            color: var(--text-secondary);
+            margin-bottom: 2rem;
+            max-width: 400px;
+        }
+        
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.875rem 1.75rem;
+            background: linear-gradient(135deg, var(--accent-purple), var(--accent-blue));
+            color: white;
+            text-decoration: none;
+            border-radius: 12px;
+            font-weight: 600;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 30px rgba(152, 118, 170, 0.4);
+        }
+        
+        .ascii-art {
+            font-family: var(--font-mono);
+            font-size: 0.7rem;
+            color: var(--accent-purple);
+            opacity: 0.5;
+            margin-top: 4rem;
+            white-space: pre;
+        }
+    </style>
+</head>
+<body>
+    <div class="error-code">404</div>
+    <h1>Secret Not Found</h1>
+    <p>The page you're looking for doesn't exist or has been moved to a secure location.</p>
+    <a href="./" class="btn">
+        <span>🔐</span> Back to Home
+    </a>
+    <div class="ascii-art">
+   _____  _____       _____ ______ _____ _____  ______ _______ 
+  / ____|/ ____|     / ____|  ____/ ____|  __ \|  ____|__   __|
+ | |  __| |   ______| (___ | |__ | |    | |__) | |__     | |   
+ | | |_ | |  |______|\___ \|  __|| |    |  _  /|  __|    | |   
+ | |__| | |____      ____) | |___| |____| | \ \| |____   | |   
+  \_____|\_____|    |_____/|______\_____|_|  \_\______|  |_|   
+    </div>
+</body>
+</html>
+
