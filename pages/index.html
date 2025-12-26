@@ -1,0 +1,1278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>go-secret | GCP Secret Manager TUI</title>
+    <meta name="description" content="A security-first terminal UI for managing GCP Secret Manager secrets. Beautiful, fast, and secure.">
+    <meta name="keywords" content="GCP, Secret Manager, TUI, Terminal, Go, Golang, Security, Secrets Management">
+    <meta name="author" content="The Burrow Hub">
+    
+    <!-- Open Graph -->
+    <meta property="og:title" content="go-secret | GCP Secret Manager TUI">
+    <meta property="og:description" content="A security-first terminal UI for managing GCP Secret Manager secrets">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://theburrowhub.github.io/go-secret/">
+    
+    <!-- Favicon -->
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔐</text></svg>">
+    
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    
+    <style>
+        :root {
+            /* Darcula-inspired palette */
+            --bg-primary: #1e1f22;
+            --bg-secondary: #2b2d30;
+            --bg-tertiary: #393b40;
+            --bg-hover: #43454a;
+            
+            --text-primary: #bcbec4;
+            --text-secondary: #7a7e85;
+            --text-muted: #5a5d63;
+            
+            --accent-purple: #9876aa;
+            --accent-blue: #6897bb;
+            --accent-green: #6a8759;
+            --accent-orange: #cc7832;
+            --accent-yellow: #ffc66d;
+            --accent-red: #bc3f3c;
+            --accent-cyan: #299999;
+            
+            --gradient-main: linear-gradient(135deg, var(--accent-purple) 0%, var(--accent-blue) 50%, var(--accent-cyan) 100%);
+            --gradient-glow: radial-gradient(ellipse at center, rgba(152, 118, 170, 0.15) 0%, transparent 70%);
+            
+            --font-sans: 'Outfit', system-ui, -apple-system, sans-serif;
+            --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+            
+            --radius-sm: 6px;
+            --radius-md: 12px;
+            --radius-lg: 20px;
+            --radius-xl: 28px;
+            
+            --shadow-glow: 0 0 60px rgba(152, 118, 170, 0.2);
+            --shadow-card: 0 4px 24px rgba(0, 0, 0, 0.4);
+        }
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        html {
+            scroll-behavior: smooth;
+        }
+        
+        body {
+            font-family: var(--font-sans);
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.6;
+            overflow-x: hidden;
+        }
+        
+        /* Scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: var(--bg-secondary);
+        }
+        ::-webkit-scrollbar-thumb {
+            background: var(--bg-tertiary);
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--bg-hover);
+        }
+        
+        /* Background effects */
+        .bg-pattern {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: -1;
+            background-image: 
+                radial-gradient(circle at 20% 20%, rgba(152, 118, 170, 0.08) 0%, transparent 40%),
+                radial-gradient(circle at 80% 80%, rgba(104, 151, 187, 0.08) 0%, transparent 40%),
+                radial-gradient(circle at 50% 50%, rgba(41, 153, 153, 0.05) 0%, transparent 50%);
+        }
+        
+        .grid-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: -1;
+            background-image: 
+                linear-gradient(rgba(152, 118, 170, 0.03) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(152, 118, 170, 0.03) 1px, transparent 1px);
+            background-size: 60px 60px;
+        }
+        
+        /* Navigation */
+        nav {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            z-index: 1000;
+            background: rgba(30, 31, 34, 0.85);
+            backdrop-filter: blur(20px);
+            border-bottom: 1px solid var(--bg-tertiary);
+            padding: 1rem 2rem;
+        }
+        
+        .nav-content {
+            max-width: 1200px;
+            margin: 0 auto;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            font-weight: 700;
+            font-size: 1.25rem;
+            color: var(--text-primary);
+            text-decoration: none;
+        }
+        
+        .logo-icon {
+            font-size: 1.5rem;
+        }
+        
+        .nav-links {
+            display: flex;
+            gap: 2rem;
+            list-style: none;
+        }
+        
+        .nav-links a {
+            color: var(--text-secondary);
+            text-decoration: none;
+            font-weight: 500;
+            font-size: 0.95rem;
+            transition: color 0.2s;
+        }
+        
+        .nav-links a:hover {
+            color: var(--accent-purple);
+        }
+        
+        .nav-cta {
+            display: flex;
+            gap: 1rem;
+            align-items: center;
+        }
+        
+        /* Buttons */
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.75rem 1.5rem;
+            border-radius: var(--radius-md);
+            font-family: var(--font-sans);
+            font-weight: 600;
+            font-size: 0.95rem;
+            text-decoration: none;
+            transition: all 0.25s ease;
+            cursor: pointer;
+            border: none;
+        }
+        
+        .btn-primary {
+            background: var(--gradient-main);
+            color: white;
+            box-shadow: 0 4px 20px rgba(152, 118, 170, 0.3);
+        }
+        
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 30px rgba(152, 118, 170, 0.4);
+        }
+        
+        .btn-secondary {
+            background: var(--bg-tertiary);
+            color: var(--text-primary);
+            border: 1px solid var(--bg-hover);
+        }
+        
+        .btn-secondary:hover {
+            background: var(--bg-hover);
+            border-color: var(--accent-purple);
+        }
+        
+        .btn-lg {
+            padding: 1rem 2rem;
+            font-size: 1.1rem;
+            border-radius: var(--radius-lg);
+        }
+        
+        /* Hero Section */
+        .hero {
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+            padding: 8rem 2rem 4rem;
+            position: relative;
+        }
+        
+        .hero-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            background: var(--bg-secondary);
+            border: 1px solid var(--bg-tertiary);
+            padding: 0.5rem 1rem;
+            border-radius: 100px;
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            margin-bottom: 2rem;
+            animation: fadeInUp 0.6s ease;
+        }
+        
+        .hero-badge-dot {
+            width: 8px;
+            height: 8px;
+            background: var(--accent-green);
+            border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        
+        .hero-title {
+            font-size: clamp(3rem, 8vw, 5.5rem);
+            font-weight: 800;
+            line-height: 1.1;
+            margin-bottom: 1.5rem;
+            animation: fadeInUp 0.6s ease 0.1s both;
+        }
+        
+        .hero-title .gradient-text {
+            background: var(--gradient-main);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+        
+        .hero-subtitle {
+            font-size: clamp(1.1rem, 2.5vw, 1.35rem);
+            color: var(--text-secondary);
+            max-width: 600px;
+            margin-bottom: 2.5rem;
+            animation: fadeInUp 0.6s ease 0.2s both;
+        }
+        
+        .hero-actions {
+            display: flex;
+            gap: 1rem;
+            flex-wrap: wrap;
+            justify-content: center;
+            animation: fadeInUp 0.6s ease 0.3s both;
+        }
+        
+        @keyframes fadeInUp {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        
+        /* Terminal Preview */
+        .terminal-preview {
+            margin-top: 4rem;
+            width: 100%;
+            max-width: 900px;
+            animation: fadeInUp 0.8s ease 0.4s both;
+        }
+        
+        .terminal {
+            background: var(--bg-secondary);
+            border-radius: var(--radius-lg);
+            border: 1px solid var(--bg-tertiary);
+            box-shadow: var(--shadow-card), var(--shadow-glow);
+            overflow: hidden;
+        }
+        
+        .terminal-header {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 1rem 1.25rem;
+            background: var(--bg-tertiary);
+            border-bottom: 1px solid var(--bg-hover);
+        }
+        
+        .terminal-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+        }
+        
+        .terminal-dot.red { background: #ff5f56; }
+        .terminal-dot.yellow { background: #ffbd2e; }
+        .terminal-dot.green { background: #27c93f; }
+        
+        .terminal-title {
+            flex: 1;
+            text-align: center;
+            font-family: var(--font-mono);
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+        }
+        
+        .terminal-body {
+            padding: 1.5rem;
+            font-family: var(--font-mono);
+            font-size: 0.9rem;
+            line-height: 1.7;
+            overflow-x: auto;
+        }
+        
+        .terminal-body pre {
+            margin: 0;
+            white-space: pre;
+        }
+        
+        .t-purple { color: var(--accent-purple); }
+        .t-blue { color: var(--accent-blue); }
+        .t-green { color: var(--accent-green); }
+        .t-orange { color: var(--accent-orange); }
+        .t-yellow { color: var(--accent-yellow); }
+        .t-cyan { color: var(--accent-cyan); }
+        .t-muted { color: var(--text-muted); }
+        .t-bold { font-weight: 600; }
+        
+        /* Sections */
+        section {
+            padding: 6rem 2rem;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        
+        .section-header {
+            text-align: center;
+            margin-bottom: 4rem;
+        }
+        
+        .section-tag {
+            display: inline-block;
+            font-family: var(--font-mono);
+            font-size: 0.85rem;
+            color: var(--accent-purple);
+            background: rgba(152, 118, 170, 0.1);
+            padding: 0.35rem 0.85rem;
+            border-radius: 100px;
+            margin-bottom: 1rem;
+        }
+        
+        .section-title {
+            font-size: clamp(2rem, 5vw, 2.75rem);
+            font-weight: 700;
+            margin-bottom: 1rem;
+        }
+        
+        .section-desc {
+            color: var(--text-secondary);
+            font-size: 1.1rem;
+            max-width: 600px;
+            margin: 0 auto;
+        }
+        
+        /* Features Grid */
+        .features-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 1.5rem;
+        }
+        
+        .feature-card {
+            background: var(--bg-secondary);
+            border: 1px solid var(--bg-tertiary);
+            border-radius: var(--radius-lg);
+            padding: 2rem;
+            transition: all 0.3s ease;
+        }
+        
+        .feature-card:hover {
+            border-color: var(--accent-purple);
+            transform: translateY(-4px);
+            box-shadow: var(--shadow-card);
+        }
+        
+        .feature-icon {
+            font-size: 2.5rem;
+            margin-bottom: 1.25rem;
+        }
+        
+        .feature-title {
+            font-size: 1.25rem;
+            font-weight: 600;
+            margin-bottom: 0.75rem;
+        }
+        
+        .feature-desc {
+            color: var(--text-secondary);
+            font-size: 0.95rem;
+        }
+        
+        /* Security Section */
+        .security-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 1.5rem;
+        }
+        
+        .security-card {
+            background: linear-gradient(135deg, var(--bg-secondary) 0%, rgba(152, 118, 170, 0.05) 100%);
+            border: 1px solid var(--bg-tertiary);
+            border-radius: var(--radius-lg);
+            padding: 1.75rem;
+        }
+        
+        .security-card-header {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            margin-bottom: 1rem;
+        }
+        
+        .security-card-icon {
+            font-size: 1.5rem;
+        }
+        
+        .security-card-title {
+            font-size: 1.1rem;
+            font-weight: 600;
+        }
+        
+        .security-list {
+            list-style: none;
+        }
+        
+        .security-list li {
+            display: flex;
+            align-items: flex-start;
+            gap: 0.5rem;
+            padding: 0.5rem 0;
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+        }
+        
+        .security-list li::before {
+            content: "✓";
+            color: var(--accent-green);
+            font-weight: 600;
+        }
+        
+        /* Installation Section */
+        .install-options {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+            gap: 2rem;
+        }
+        
+        .install-option {
+            background: var(--bg-secondary);
+            border: 1px solid var(--bg-tertiary);
+            border-radius: var(--radius-lg);
+            padding: 2rem;
+        }
+        
+        .install-option-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 1.5rem;
+        }
+        
+        .install-option-title {
+            font-size: 1.1rem;
+            font-weight: 600;
+        }
+        
+        .install-option-badge {
+            font-size: 0.75rem;
+            background: var(--accent-green);
+            color: white;
+            padding: 0.25rem 0.75rem;
+            border-radius: 100px;
+            font-weight: 600;
+        }
+        
+        .code-block {
+            background: var(--bg-primary);
+            border: 1px solid var(--bg-tertiary);
+            border-radius: var(--radius-md);
+            padding: 1.25rem;
+            font-family: var(--font-mono);
+            font-size: 0.85rem;
+            overflow-x: auto;
+            position: relative;
+        }
+        
+        .code-block code {
+            color: var(--text-primary);
+        }
+        
+        .code-block .comment {
+            color: var(--text-muted);
+        }
+        
+        .copy-btn {
+            position: absolute;
+            top: 0.75rem;
+            right: 0.75rem;
+            background: var(--bg-tertiary);
+            border: none;
+            color: var(--text-secondary);
+            padding: 0.4rem 0.6rem;
+            border-radius: var(--radius-sm);
+            cursor: pointer;
+            font-size: 0.75rem;
+            transition: all 0.2s;
+        }
+        
+        .copy-btn:hover {
+            background: var(--bg-hover);
+            color: var(--text-primary);
+        }
+        
+        /* Keyboard Shortcuts */
+        .shortcuts-container {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 2rem;
+        }
+        
+        .shortcuts-group {
+            background: var(--bg-secondary);
+            border: 1px solid var(--bg-tertiary);
+            border-radius: var(--radius-lg);
+            padding: 1.5rem;
+        }
+        
+        .shortcuts-group-title {
+            font-size: 1rem;
+            font-weight: 600;
+            margin-bottom: 1rem;
+            color: var(--accent-purple);
+        }
+        
+        .shortcut-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 0.6rem 0;
+            border-bottom: 1px solid var(--bg-tertiary);
+        }
+        
+        .shortcut-row:last-child {
+            border-bottom: none;
+        }
+        
+        .shortcut-keys {
+            display: flex;
+            gap: 0.25rem;
+        }
+        
+        kbd {
+            background: var(--bg-primary);
+            border: 1px solid var(--bg-hover);
+            border-radius: var(--radius-sm);
+            padding: 0.25rem 0.5rem;
+            font-family: var(--font-mono);
+            font-size: 0.8rem;
+            color: var(--accent-yellow);
+        }
+        
+        .shortcut-desc {
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+        }
+        
+        /* Footer */
+        footer {
+            background: var(--bg-secondary);
+            border-top: 1px solid var(--bg-tertiary);
+            padding: 4rem 2rem 2rem;
+            margin-top: 4rem;
+        }
+        
+        .footer-content {
+            max-width: 1200px;
+            margin: 0 auto;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 3rem;
+        }
+        
+        .footer-brand {
+            grid-column: span 2;
+        }
+        
+        .footer-brand .logo {
+            margin-bottom: 1rem;
+        }
+        
+        .footer-brand p {
+            color: var(--text-secondary);
+            font-size: 0.95rem;
+            max-width: 300px;
+        }
+        
+        .footer-title {
+            font-size: 0.85rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-muted);
+            margin-bottom: 1rem;
+        }
+        
+        .footer-links {
+            list-style: none;
+        }
+        
+        .footer-links li {
+            margin-bottom: 0.5rem;
+        }
+        
+        .footer-links a {
+            color: var(--text-secondary);
+            text-decoration: none;
+            font-size: 0.95rem;
+            transition: color 0.2s;
+        }
+        
+        .footer-links a:hover {
+            color: var(--accent-purple);
+        }
+        
+        .footer-bottom {
+            max-width: 1200px;
+            margin: 3rem auto 0;
+            padding-top: 2rem;
+            border-top: 1px solid var(--bg-tertiary);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 1rem;
+        }
+        
+        .footer-bottom p {
+            color: var(--text-muted);
+            font-size: 0.9rem;
+        }
+        
+        .footer-social {
+            display: flex;
+            gap: 1rem;
+        }
+        
+        .footer-social a {
+            color: var(--text-secondary);
+            font-size: 1.25rem;
+            transition: color 0.2s;
+        }
+        
+        .footer-social a:hover {
+            color: var(--accent-purple);
+        }
+        
+        /* Mobile Menu */
+        .mobile-menu-toggle {
+            display: none;
+            background: none;
+            border: none;
+            color: var(--text-primary);
+            font-size: 1.5rem;
+            cursor: pointer;
+        }
+        
+        /* Responsive */
+        @media (max-width: 768px) {
+            nav {
+                padding: 1rem;
+            }
+            
+            .nav-links {
+                display: none;
+            }
+            
+            .nav-cta .btn-secondary {
+                display: none;
+            }
+            
+            .mobile-menu-toggle {
+                display: block;
+            }
+            
+            .hero {
+                padding: 7rem 1.5rem 3rem;
+            }
+            
+            .hero-actions {
+                flex-direction: column;
+                width: 100%;
+                max-width: 300px;
+            }
+            
+            .hero-actions .btn {
+                width: 100%;
+                justify-content: center;
+            }
+            
+            section {
+                padding: 4rem 1.5rem;
+            }
+            
+            .terminal-body {
+                font-size: 0.75rem;
+                padding: 1rem;
+            }
+            
+            .footer-brand {
+                grid-column: span 1;
+            }
+            
+            .footer-content {
+                gap: 2rem;
+            }
+        }
+        
+        /* ASCII Art animation */
+        .ascii-art {
+            font-family: var(--font-mono);
+            font-size: 0.6rem;
+            line-height: 1.2;
+            color: var(--accent-purple);
+            opacity: 0.8;
+            text-align: center;
+            margin-bottom: 2rem;
+            animation: fadeInUp 0.6s ease;
+        }
+        
+        @media (max-width: 640px) {
+            .ascii-art {
+                font-size: 0.35rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="bg-pattern"></div>
+    <div class="grid-overlay"></div>
+    
+    <!-- Navigation -->
+    <nav>
+        <div class="nav-content">
+            <a href="#" class="logo">
+                <span class="logo-icon">🔐</span>
+                <span>go-secret</span>
+            </a>
+            
+            <ul class="nav-links">
+                <li><a href="#features">Features</a></li>
+                <li><a href="#security">Security</a></li>
+                <li><a href="#installation">Installation</a></li>
+                <li><a href="#shortcuts">Shortcuts</a></li>
+            </ul>
+            
+            <div class="nav-cta">
+                <a href="https://github.com/theburrowhub/go-secret" class="btn btn-secondary" target="_blank">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+                    GitHub
+                </a>
+                <a href="#installation" class="btn btn-primary">Get Started</a>
+            </div>
+            
+            <button class="mobile-menu-toggle">☰</button>
+        </div>
+    </nav>
+    
+    <!-- Hero Section -->
+    <section class="hero">
+        <div class="ascii-art">
+<pre>
+ ▄▄▄▄▄▄▄▄▄▄▄  ▄▄▄▄▄▄▄▄▄▄▄       ▄▄▄▄▄▄▄▄▄▄▄  ▄▄▄▄▄▄▄▄▄▄▄  ▄▄▄▄▄▄▄▄▄▄▄  ▄▄▄▄▄▄▄▄▄▄▄  ▄▄▄▄▄▄▄▄▄▄▄  ▄▄▄▄▄▄▄▄▄▄▄ 
+▐░░░░░░░░░░░▌▐░░░░░░░░░░░▌     ▐░░░░░░░░░░░▌▐░░░░░░░░░░░▌▐░░░░░░░░░░░▌▐░░░░░░░░░░░▌▐░░░░░░░░░░░▌▐░░░░░░░░░░░▌
+▐░█▀▀▀▀▀▀▀▀▀ ▐░█▀▀▀▀▀▀▀█░▌     ▐░█▀▀▀▀▀▀▀▀▀ ▐░█▀▀▀▀▀▀▀▀▀ ▐░█▀▀▀▀▀▀▀▀▀ ▐░█▀▀▀▀▀▀▀█░▌▐░█▀▀▀▀▀▀▀▀▀  ▀▀▀▀█░█▀▀▀▀ 
+▐░▌          ▐░▌       ▐░▌     ▐░▌          ▐░▌          ▐░▌          ▐░▌       ▐░▌▐░▌               ▐░▌     
+▐░▌ ▄▄▄▄▄▄▄▄ ▐░▌       ▐░▌     ▐░█▄▄▄▄▄▄▄▄▄ ▐░█▄▄▄▄▄▄▄▄▄ ▐░▌          ▐░█▄▄▄▄▄▄▄█░▌▐░█▄▄▄▄▄▄▄▄▄      ▐░▌     
+▐░▌▐░░░░░░░░▌▐░▌       ▐░▌     ▐░░░░░░░░░░░▌▐░░░░░░░░░░░▌▐░▌          ▐░░░░░░░░░░░▌▐░░░░░░░░░░░▌     ▐░▌     
+▐░▌ ▀▀▀▀▀▀█░▌▐░▌       ▐░▌      ▀▀▀▀▀▀▀▀▀█░▌▐░█▀▀▀▀▀▀▀▀▀ ▐░▌          ▐░█▀▀▀▀█░█▀▀ ▐░█▀▀▀▀▀▀▀▀▀      ▐░▌     
+▐░▌       ▐░▌▐░▌       ▐░▌               ▐░▌▐░▌          ▐░▌          ▐░▌     ▐░▌  ▐░▌               ▐░▌     
+▐░█▄▄▄▄▄▄▄█░▌▐░█▄▄▄▄▄▄▄█░▌      ▄▄▄▄▄▄▄▄▄█░▌▐░█▄▄▄▄▄▄▄▄▄ ▐░█▄▄▄▄▄▄▄▄▄ ▐░▌      ▐░▌ ▐░█▄▄▄▄▄▄▄▄▄      ▐░▌     
+▐░░░░░░░░░░░▌▐░░░░░░░░░░░▌     ▐░░░░░░░░░░░▌▐░░░░░░░░░░░▌▐░░░░░░░░░░░▌▐░▌       ▐░▌▐░░░░░░░░░░░▌     ▐░▌     
+ ▀▀▀▀▀▀▀▀▀▀▀  ▀▀▀▀▀▀▀▀▀▀▀       ▀▀▀▀▀▀▀▀▀▀▀  ▀▀▀▀▀▀▀▀▀▀▀  ▀▀▀▀▀▀▀▀▀▀▀  ▀         ▀  ▀▀▀▀▀▀▀▀▀▀▀       ▀      
+</pre>
+        </div>
+        
+        <span class="hero-badge">
+            <span class="hero-badge-dot"></span>
+            Open Source • MIT License
+        </span>
+        
+        <h1 class="hero-title">
+            Manage GCP Secrets<br>
+            <span class="gradient-text">With Style</span>
+        </h1>
+        
+        <p class="hero-subtitle">
+            A security-first terminal UI for managing Google Cloud Secret Manager. 
+            Beautiful, fast, and designed with security as a core principle.
+        </p>
+        
+        <div class="hero-actions">
+            <a href="#installation" class="btn btn-primary btn-lg">
+                <span>⚡</span> Quick Install
+            </a>
+            <a href="https://github.com/theburrowhub/go-secret" class="btn btn-secondary btn-lg" target="_blank">
+                <span>📖</span> View on GitHub
+            </a>
+        </div>
+        
+        <div class="terminal-preview">
+            <div class="terminal">
+                <div class="terminal-header">
+                    <span class="terminal-dot red"></span>
+                    <span class="terminal-dot yellow"></span>
+                    <span class="terminal-dot green"></span>
+                    <span class="terminal-title">go-secret — my-gcp-project</span>
+                </div>
+                <div class="terminal-body">
+<pre>
+<span class="t-purple t-bold">🔐 Secrets</span> <span class="t-muted">│</span> <span class="t-blue">my-gcp-project</span> <span class="t-muted">│</span> <span class="t-cyan">production/</span>
+
+<span class="t-green">▸</span> <span class="t-yellow">📁</span> <span class="t-bold">api/</span>              <span class="t-muted">3 secrets</span>
+  <span class="t-yellow">📁</span> <span class="t-bold">database/</span>         <span class="t-muted">5 secrets</span>
+  <span class="t-yellow">📁</span> <span class="t-bold">services/</span>         <span class="t-muted">12 secrets</span>
+  <span class="t-orange">🔑</span> auth-token         <span class="t-muted">v3 • 2 days ago</span>
+  <span class="t-orange">🔑</span> encryption-key     <span class="t-muted">v1 • 30 days ago</span>
+
+<span class="t-muted">─────────────────────────────────────────────────────────────</span>
+<span class="t-green">↑↓</span> Navigate  <span class="t-green">Enter</span> Open  <span class="t-green">/</span> Filter  <span class="t-green">n</span> New  <span class="t-green">Ctrl+P</span> Switch Project
+</pre>
+                </div>
+            </div>
+        </div>
+    </section>
+    
+    <!-- Features Section -->
+    <section id="features">
+        <div class="section-header">
+            <span class="section-tag">Features</span>
+            <h2 class="section-title">Everything You Need</h2>
+            <p class="section-desc">
+                Powerful features wrapped in a beautiful terminal interface
+            </p>
+        </div>
+        
+        <div class="features-grid">
+            <div class="feature-card">
+                <div class="feature-icon">📁</div>
+                <h3 class="feature-title">Folder Navigation</h3>
+                <p class="feature-desc">
+                    Secrets organized into virtual folders using a configurable separator. 
+                    Navigate your secrets like a file system.
+                </p>
+            </div>
+            
+            <div class="feature-card">
+                <div class="feature-icon">🔍</div>
+                <h3 class="feature-title">Real-time Filtering</h3>
+                <p class="feature-desc">
+                    Instantly find any secret with blazing fast search. 
+                    Just type and watch results appear in real-time.
+                </p>
+            </div>
+            
+            <div class="feature-card">
+                <div class="feature-icon">🔐</div>
+                <h3 class="feature-title">Version Management</h3>
+                <p class="feature-desc">
+                    View all versions, reveal values safely, and add new versions 
+                    without leaving your terminal.
+                </p>
+            </div>
+            
+            <div class="feature-card">
+                <div class="feature-icon">📋</div>
+                <h3 class="feature-title">Code Generation</h3>
+                <p class="feature-desc">
+                    Generate code snippets for bash, helmfile, kyverno, and more. 
+                    Create custom templates for your workflow.
+                </p>
+            </div>
+            
+            <div class="feature-card">
+                <div class="feature-icon">⚡</div>
+                <h3 class="feature-title">Quick Project Switch</h3>
+                <p class="feature-desc">
+                    Switch between GCP projects instantly with Ctrl+P. 
+                    Recent projects are saved for quick access.
+                </p>
+            </div>
+            
+            <div class="feature-card">
+                <div class="feature-icon">🎨</div>
+                <h3 class="feature-title">Beautiful UI</h3>
+                <p class="feature-desc">
+                    Modern Darcula theme with intuitive keyboard shortcuts. 
+                    A joy to use every day.
+                </p>
+            </div>
+        </div>
+    </section>
+    
+    <!-- Security Section -->
+    <section id="security">
+        <div class="section-header">
+            <span class="section-tag">🛡️ Security First</span>
+            <h2 class="section-title">Built for Security</h2>
+            <p class="section-desc">
+                Every feature is designed to minimize the risk of secret exposure
+            </p>
+        </div>
+        
+        <div class="security-grid">
+            <div class="security-card">
+                <div class="security-card-header">
+                    <span class="security-card-icon">🔒</span>
+                    <h3 class="security-card-title">Secure Memory</h3>
+                </div>
+                <ul class="security-list">
+                    <li>Secrets stored as bytes, not strings</li>
+                    <li>Automatic memory zeroing after use</li>
+                    <li>No lingering data in memory</li>
+                </ul>
+            </div>
+            
+            <div class="security-card">
+                <div class="security-card-header">
+                    <span class="security-card-icon">📋</span>
+                    <h3 class="security-card-title">Clipboard Protection</h3>
+                </div>
+                <ul class="security-list">
+                    <li>Auto-clear after configurable timeout</li>
+                    <li>Visual countdown in status bar</li>
+                    <li>Default 30 second timeout</li>
+                </ul>
+            </div>
+            
+            <div class="security-card">
+                <div class="security-card-header">
+                    <span class="security-card-icon">⏰</span>
+                    <h3 class="security-card-title">Session Management</h3>
+                </div>
+                <ul class="security-list">
+                    <li>Inactivity timeout auto-lock</li>
+                    <li>Sensitive data cleared on lock</li>
+                    <li>Quick unlock to resume</li>
+                </ul>
+            </div>
+            
+            <div class="security-card">
+                <div class="security-card-header">
+                    <span class="security-card-icon">📝</span>
+                    <h3 class="security-card-title">Audit Logging</h3>
+                </div>
+                <ul class="security-list">
+                    <li>Comprehensive JSON event logs</li>
+                    <li>User identification included</li>
+                    <li>Automatic log rotation</li>
+                </ul>
+            </div>
+            
+            <div class="security-card">
+                <div class="security-card-header">
+                    <span class="security-card-icon">📂</span>
+                    <h3 class="security-card-title">File Security</h3>
+                </div>
+                <ul class="security-list">
+                    <li>Config files use 0600 permissions</li>
+                    <li>Directories use 0700 permissions</li>
+                    <li>Auto-fix insecure permissions</li>
+                </ul>
+            </div>
+            
+            <div class="security-card">
+                <div class="security-card-header">
+                    <span class="security-card-icon">⚙️</span>
+                    <h3 class="security-card-title">Settings Menu</h3>
+                </div>
+                <ul class="security-list">
+                    <li>Configure all security options</li>
+                    <li>View audit logs in-app</li>
+                    <li>Access with Ctrl+S</li>
+                </ul>
+            </div>
+        </div>
+    </section>
+    
+    <!-- Installation Section -->
+    <section id="installation">
+        <div class="section-header">
+            <span class="section-tag">🚀 Installation</span>
+            <h2 class="section-title">Get Started in Seconds</h2>
+            <p class="section-desc">
+                Choose your preferred installation method
+            </p>
+        </div>
+        
+        <div class="install-options">
+            <div class="install-option">
+                <div class="install-option-header">
+                    <h3 class="install-option-title">Quick Install</h3>
+                    <span class="install-option-badge">Recommended</span>
+                </div>
+                <div class="code-block">
+                    <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    <code>curl -sSL https://raw.githubusercontent.com/theburrowhub/go-secret/main/install.sh | bash</code>
+                </div>
+            </div>
+            
+            <div class="install-option">
+                <div class="install-option-header">
+                    <h3 class="install-option-title">Using Go</h3>
+                </div>
+                <div class="code-block">
+                    <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    <code>go install github.com/theburrowhub/go-secret@latest</code>
+                </div>
+            </div>
+            
+            <div class="install-option">
+                <div class="install-option-header">
+                    <h3 class="install-option-title">From Source</h3>
+                </div>
+                <div class="code-block">
+                    <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    <code><span class="comment"># Clone and build</span>
+git clone https://github.com/theburrowhub/go-secret.git
+cd go-secret
+make build</code>
+                </div>
+            </div>
+            
+            <div class="install-option">
+                <div class="install-option-header">
+                    <h3 class="install-option-title">Usage</h3>
+                </div>
+                <div class="code-block">
+                    <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+                    <code><span class="comment"># Run with a project ID</span>
+go-secret -project my-gcp-project
+
+<span class="comment"># Or be prompted interactively</span>
+go-secret</code>
+                </div>
+            </div>
+        </div>
+    </section>
+    
+    <!-- Keyboard Shortcuts Section -->
+    <section id="shortcuts">
+        <div class="section-header">
+            <span class="section-tag">⌨️ Keyboard Shortcuts</span>
+            <h2 class="section-title">Navigate Like a Pro</h2>
+            <p class="section-desc">
+                Intuitive vim-style navigation and powerful shortcuts
+            </p>
+        </div>
+        
+        <div class="shortcuts-container">
+            <div class="shortcuts-group">
+                <h4 class="shortcuts-group-title">Global</h4>
+                <div class="shortcut-row">
+                    <div class="shortcut-keys"><kbd>Ctrl</kbd><kbd>P</kbd></div>
+                    <span class="shortcut-desc">Quick project switch</span>
+                </div>
+                <div class="shortcut-row">
+                    <div class="shortcut-keys"><kbd>Ctrl</kbd><kbd>S</kbd></div>
+                    <span class="shortcut-desc">Open settings</span>
+                </div>
+                <div class="shortcut-row">
+                    <div class="shortcut-keys"><kbd>Ctrl</kbd><kbd>C</kbd></div>
+                    <span class="shortcut-desc">Quit</span>
+                </div>
+            </div>
+            
+            <div class="shortcuts-group">
+                <h4 class="shortcuts-group-title">List View</h4>
+                <div class="shortcut-row">
+                    <div class="shortcut-keys"><kbd>↑</kbd> <kbd>k</kbd></div>
+                    <span class="shortcut-desc">Move up</span>
+                </div>
+                <div class="shortcut-row">
+                    <div class="shortcut-keys"><kbd>↓</kbd> <kbd>j</kbd></div>
+                    <span class="shortcut-desc">Move down</span>
+                </div>
+                <div class="shortcut-row">
+                    <div class="shortcut-keys"><kbd>Enter</kbd> <kbd>l</kbd></div>
+                    <span class="shortcut-desc">Open folder/secret</span>
+                </div>
+                <div class="shortcut-row">
+                    <div class="shortcut-keys"><kbd>/</kbd></div>
+                    <span class="shortcut-desc">Filter secrets</span>
+                </div>
+                <div class="shortcut-row">
+                    <div class="shortcut-keys"><kbd>n</kbd></div>
+                    <span class="shortcut-desc">Create new secret</span>
+                </div>
+            </div>
+            
+            <div class="shortcuts-group">
+                <h4 class="shortcuts-group-title">Detail View</h4>
+                <div class="shortcut-row">
+                    <div class="shortcut-keys"><kbd>r</kbd></div>
+                    <span class="shortcut-desc">Reveal secret value</span>
+                </div>
+                <div class="shortcut-row">
+                    <div class="shortcut-keys"><kbd>c</kbd></div>
+                    <span class="shortcut-desc">Copy to clipboard</span>
+                </div>
+                <div class="shortcut-row">
+                    <div class="shortcut-keys"><kbd>a</kbd></div>
+                    <span class="shortcut-desc">Add new version</span>
+                </div>
+                <div class="shortcut-row">
+                    <div class="shortcut-keys"><kbd>g</kbd></div>
+                    <span class="shortcut-desc">Generate code</span>
+                </div>
+                <div class="shortcut-row">
+                    <div class="shortcut-keys"><kbd>Esc</kbd></div>
+                    <span class="shortcut-desc">Go back</span>
+                </div>
+            </div>
+        </div>
+    </section>
+    
+    <!-- Footer -->
+    <footer>
+        <div class="footer-content">
+            <div class="footer-brand">
+                <a href="#" class="logo">
+                    <span class="logo-icon">🔐</span>
+                    <span>go-secret</span>
+                </a>
+                <p>A security-first terminal UI for managing GCP Secret Manager secrets.</p>
+            </div>
+            
+            <div>
+                <h4 class="footer-title">Resources</h4>
+                <ul class="footer-links">
+                    <li><a href="https://github.com/theburrowhub/go-secret" target="_blank">GitHub</a></li>
+                    <li><a href="https://github.com/theburrowhub/go-secret/releases" target="_blank">Releases</a></li>
+                    <li><a href="https://github.com/theburrowhub/go-secret/issues" target="_blank">Issues</a></li>
+                </ul>
+            </div>
+            
+            <div>
+                <h4 class="footer-title">Documentation</h4>
+                <ul class="footer-links">
+                    <li><a href="#installation">Installation</a></li>
+                    <li><a href="#features">Features</a></li>
+                    <li><a href="#security">Security</a></li>
+                </ul>
+            </div>
+            
+            <div>
+                <h4 class="footer-title">Community</h4>
+                <ul class="footer-links">
+                    <li><a href="https://github.com/theburrowhub/go-secret/issues/new" target="_blank">Report Bug</a></li>
+                    <li><a href="https://github.com/theburrowhub/go-secret/issues/new" target="_blank">Request Feature</a></li>
+                    <li><a href="https://github.com/theburrowhub/go-secret/blob/main/LICENSE" target="_blank">MIT License</a></li>
+                </ul>
+            </div>
+        </div>
+        
+        <div class="footer-bottom">
+            <p>Built with 💜 and security in mind by <a href="https://github.com/theburrowhub" target="_blank" style="color: var(--accent-purple);">The Burrow Hub</a></p>
+            <div class="footer-social">
+                <a href="https://github.com/theburrowhub/go-secret" target="_blank" title="GitHub">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/></svg>
+                </a>
+            </div>
+        </div>
+    </footer>
+    
+    <script>
+        // Copy code functionality
+        function copyCode(button) {
+            const codeBlock = button.parentElement;
+            const code = codeBlock.querySelector('code').innerText;
+            
+            navigator.clipboard.writeText(code).then(() => {
+                const originalText = button.innerText;
+                button.innerText = 'Copied!';
+                button.style.background = 'var(--accent-green)';
+                button.style.color = 'white';
+                
+                setTimeout(() => {
+                    button.innerText = originalText;
+                    button.style.background = '';
+                    button.style.color = '';
+                }, 2000);
+            });
+        }
+        
+        // Smooth scroll for navigation
+        document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+            anchor.addEventListener('click', function(e) {
+                e.preventDefault();
+                const target = document.querySelector(this.getAttribute('href'));
+                if (target) {
+                    target.scrollIntoView({
+                        behavior: 'smooth',
+                        block: 'start'
+                    });
+                }
+            });
+        });
+        
+        // Add scroll effect to navigation
+        let lastScroll = 0;
+        window.addEventListener('scroll', () => {
+            const nav = document.querySelector('nav');
+            const currentScroll = window.pageYOffset;
+            
+            if (currentScroll > 100) {
+                nav.style.boxShadow = '0 4px 20px rgba(0, 0, 0, 0.3)';
+            } else {
+                nav.style.boxShadow = 'none';
+            }
+            
+            lastScroll = currentScroll;
+        });
+    </script>
+</body>
+</html>
+

@@ -1,0 +1,20 @@
+# GitHub Pages configuration for go-secret
+title: go-secret
+description: A security-first terminal UI for managing GCP Secret Manager secrets
+url: https://theburrowhub.github.io
+baseurl: /go-secret
+
+# Theme settings (using no theme - pure static HTML)
+plugins: []
+
+# Exclude files from the build
+exclude:
+  - README.md
+  - LICENSE
+  - Makefile
+  - go.mod
+  - go.sum
+  - internal/
+  - main.go
+  - AGENTS.md
+
