@@ -1,41 +1,19 @@
 package main
 
-import (
-	"flag"
-	"fmt"
-	"os"
+import "github.com/theburrowhub/go-secret/cmd"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/theburrowhub/go-secret/internal/config"
-	"github.com/theburrowhub/go-secret/internal/ui"
+// Version information (injected at build time via ldflags)
+var (
+	Version   = "dev"
+	Commit    = "none"
+	BuildDate = "unknown"
 )
 
 func main() {
-	// Parse command line flags
-	projectID := flag.String("project", "", "GCP Project ID")
-	flag.StringVar(projectID, "p", "", "GCP Project ID (shorthand)")
-	flag.Parse()
+	// Set version info in cmd package
+	cmd.Version = Version
+	cmd.Commit = Commit
+	cmd.BuildDate = BuildDate
 
-	// Load configuration
-	cfg, err := config.Load()
-	if err != nil {
-		fmt.Printf("Error loading config: %v\n", err)
-		os.Exit(1)
-	}
-
-	// Create the model
-	model := ui.NewModel(cfg, *projectID)
-
-	// Create and run the program
-	p := tea.NewProgram(
-		model,
-		tea.WithAltScreen(),
-		tea.WithMouseCellMotion(),
-	)
-
-	if _, err := p.Run(); err != nil {
-		fmt.Printf("Error running program: %v\n", err)
-		os.Exit(1)
-	}
+	cmd.Execute()
 }
-
