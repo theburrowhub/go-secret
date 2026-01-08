@@ -40,6 +40,7 @@ type Config struct {
 	FolderSeparator  string          `yaml:"folder_separator"`
 	Templates        []Template      `yaml:"templates"`
 	RecentProjects   []string        `yaml:"recent_projects"`
+	SecretLocations  []string        `yaml:"secret_locations,omitempty"`
 	Clipboard        ClipboardConfig `yaml:"clipboard"`
 	Audit            AuditConfig     `yaml:"audit"`
 	Session          SessionConfig   `yaml:"session"`
@@ -238,3 +239,29 @@ func (c *Config) RemoveProject(projectID string) {
 	c.RecentProjects = filtered
 }
 
+// AddSecretLocation adds a location to the saved locations list if not already present
+func (c *Config) AddSecretLocation(location string) {
+	if location == "" {
+		return
+	}
+	
+	// Check if already exists
+	for _, l := range c.SecretLocations {
+		if l == location {
+			return
+		}
+	}
+	
+	c.SecretLocations = append(c.SecretLocations, location)
+}
+
+// RemoveSecretLocation removes a location from the saved list
+func (c *Config) RemoveSecretLocation(location string) {
+	filtered := make([]string, 0, len(c.SecretLocations))
+	for _, l := range c.SecretLocations {
+		if l != location {
+			filtered = append(filtered, l)
+		}
+	}
+	c.SecretLocations = filtered
+}

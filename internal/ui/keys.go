@@ -155,6 +155,17 @@ func InputViewBindings() []FooterBinding {
 	}
 }
 
+// CreateViewBindings returns the keybindings for the create secret view
+func CreateViewBindings() []FooterBinding {
+	return []FooterBinding{
+		{Key: "Tab", Desc: "fields"},
+		{Key: "←/→", Desc: "location"},
+		{Key: "^E", Desc: "editor"},
+		{Key: "^S/Enter", Desc: "submit"},
+		{Key: "Esc", Desc: "cancel"},
+	}
+}
+
 // ConfirmViewBindings returns the keybindings for confirm dialogs
 func ConfirmViewBindings() []FooterBinding {
 	return []FooterBinding{
