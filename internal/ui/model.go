@@ -90,8 +90,13 @@ type Model struct {
 	revealVersion  string
 	
 	// Create view state
-	createInputs   []textinput.Model
-	createFocus    int
+	createInputs       []textinput.Model
+	createFocus        int
+	createLocationIdx  int    // -1 = add new, 0 = global, 1+ = index+1 in config.SecretLocations
+	createAddingLoc    bool   // true when typing a new location
+	createLocInput     textinput.Model
+	createValueArea    textarea.Model  // textarea for multiline secrets
+	createEditorMode   bool            // true = textarea, false = password input
 	
 	// Add version view state
 	versionInput   textinput.Model
@@ -226,6 +231,18 @@ func NewModel(cfg *config.Config, projectID string) Model {
 	createInputs[1].CharLimit = 65536
 	createInputs[1].EchoMode = textinput.EchoPassword
 	
+	// Initialize create location input
+	createLocInput := textinput.New()
+	createLocInput.Placeholder = "e.g. europe-west1, us-central1"
+	createLocInput.CharLimit = 50
+	
+	// Initialize create value textarea (for multiline secrets like PEM keys)
+	createValueArea := textarea.New()
+	createValueArea.Placeholder = "Paste secret value here...\n(supports multiline, e.g. PEM keys)"
+	createValueArea.CharLimit = 65536
+	createValueArea.SetWidth(50)
+	createValueArea.SetHeight(6)
+	
 	// Initialize version input
 	versionInput := textinput.New()
 	versionInput.Placeholder = "new secret value"
@@ -293,6 +310,10 @@ func NewModel(cfg *config.Config, projectID string) Model {
 		keys:               keys,
 		filterInput:        filterInput,
 		createInputs:       createInputs,
+		createLocInput:     createLocInput,
+		createLocationIdx:  0, // 0 = global
+		createValueArea:    createValueArea,
+		createEditorMode:   false,
 		versionInput:       versionInput,
 		configInputs:       configInputs,
 		templateTitleInput: templateTitleInput,
@@ -352,9 +373,9 @@ func (m Model) accessSecretVersion(secretName, version string) tea.Cmd {
 	}
 }
 
-func (m Model) createSecret(name string, value []byte) tea.Cmd {
+func (m Model) createSecret(name string, value []byte, location string) tea.Cmd {
 	return func() tea.Msg {
-		err := m.client.CreateSecret(m.ctx, name, nil)
+		err := m.client.CreateSecret(m.ctx, name, nil, location)
 		if err != nil {
 			return secretCreatedMsg{name: name, err: err}
 		}
@@ -820,6 +841,15 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.createInputs[0].Focus()
 		m.createFocus = 0
+		// Initialize location selector: default to first saved location if any, else global
+		if len(m.config.SecretLocations) > 0 {
+			m.createLocationIdx = 1 // First saved location
+		} else {
+			m.createLocationIdx = 0 // Global
+		}
+		m.createAddingLoc = false
+		m.createEditorMode = false
+		m.createValueArea.SetValue("")
 		return m, textinput.Blink
 	case "d":
 		if len(m.displayItems) > 0 && !m.displayItems[m.cursor].IsFolder {
@@ -899,44 +929,226 @@ func (m Model) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateCreate(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Handle adding new location mode
+	if m.createAddingLoc {
+		switch msg.String() {
+		case "enter":
+			newLoc := m.createLocInput.Value()
+			if newLoc != "" {
+				m.config.AddSecretLocation(newLoc)
+				_ = m.config.Save()
+				// Point to the new location (index = len + 1 because 0 is global)
+				m.createLocationIdx = len(m.config.SecretLocations)
+			}
+			m.createAddingLoc = false
+			m.createLocInput.SetValue("")
+			m.createLocInput.Blur()
+			return m, nil
+		case "esc":
+			m.createAddingLoc = false
+			m.createLocInput.SetValue("")
+			m.createLocInput.Blur()
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.createLocInput, cmd = m.createLocInput.Update(msg)
+		return m, cmd
+	}
+
+	// Toggle editor mode with Ctrl+E
+	if msg.String() == "ctrl+e" {
+		m.createEditorMode = !m.createEditorMode
+		if m.createEditorMode {
+			// Copy value from input to textarea
+			m.createValueArea.SetValue(m.createInputs[1].Value())
+			m.createInputs[1].Blur()
+			if m.createFocus == 1 {
+				m.createValueArea.Focus()
+			}
+		} else {
+			// Copy value from textarea to input
+			m.createInputs[1].SetValue(m.createValueArea.Value())
+			m.createValueArea.Blur()
+			if m.createFocus == 1 {
+				m.createInputs[1].Focus()
+				return m, textinput.Blink
+			}
+		}
+		return m, nil
+	}
+
+	// Field navigation: 0=name, 1=value, 2=location
 	switch msg.String() {
-	case "tab", "down":
-		m.createInputs[m.createFocus].Blur()
-		m.createFocus = (m.createFocus + 1) % len(m.createInputs)
-		m.createInputs[m.createFocus].Focus()
-		return m, textinput.Blink
-	case "shift+tab", "up":
-		m.createInputs[m.createFocus].Blur()
+	case "tab":
+		// Blur current field
+		if m.createFocus == 0 {
+			m.createInputs[0].Blur()
+		} else if m.createFocus == 1 {
+			if m.createEditorMode {
+				m.createValueArea.Blur()
+			} else {
+				m.createInputs[1].Blur()
+			}
+		}
+		// Move to next field
+		m.createFocus = (m.createFocus + 1) % 3
+		// Focus new field
+		if m.createFocus == 0 {
+			m.createInputs[0].Focus()
+			return m, textinput.Blink
+		} else if m.createFocus == 1 {
+			if m.createEditorMode {
+				m.createValueArea.Focus()
+				return m, nil
+			}
+			m.createInputs[1].Focus()
+			return m, textinput.Blink
+		}
+		return m, nil
+	case "shift+tab":
+		// Blur current field
+		if m.createFocus == 0 {
+			m.createInputs[0].Blur()
+		} else if m.createFocus == 1 {
+			if m.createEditorMode {
+				m.createValueArea.Blur()
+			} else {
+				m.createInputs[1].Blur()
+			}
+		}
+		// Move to previous field
 		m.createFocus--
 		if m.createFocus < 0 {
-			m.createFocus = len(m.createInputs) - 1
+			m.createFocus = 2
 		}
-		m.createInputs[m.createFocus].Focus()
-		return m, textinput.Blink
+		// Focus new field
+		if m.createFocus == 0 {
+			m.createInputs[0].Focus()
+			return m, textinput.Blink
+		} else if m.createFocus == 1 {
+			if m.createEditorMode {
+				m.createValueArea.Focus()
+				return m, nil
+			}
+			m.createInputs[1].Focus()
+			return m, textinput.Blink
+		}
+		return m, nil
 	case "enter":
+		// In editor mode, enter adds newline - use Ctrl+Enter to submit
+		if m.createEditorMode && m.createFocus == 1 {
+			// Let textarea handle enter for newlines
+			var cmd tea.Cmd
+			m.createValueArea, cmd = m.createValueArea.Update(msg)
+			return m, cmd
+		}
+		// If on location field and "Add new" is selected
+		if m.createFocus == 2 && m.createLocationIdx == -1 {
+			m.createAddingLoc = true
+			m.createLocInput.Focus()
+			return m, textinput.Blink
+		}
+		// Submit form
 		name := m.createInputs[0].Value()
-		value := m.createInputs[1].Value()
+		var value string
+		if m.createEditorMode {
+			value = m.createValueArea.Value()
+		} else {
+			value = m.createInputs[1].Value()
+		}
 		if name == "" {
 			m.statusMsg = "Secret name is required"
 			m.statusErr = true
 			return m, nil
 		}
+		// Get selected location: 0=global (empty), 1+=config.SecretLocations[idx-1]
+		var location string
+		if m.createLocationIdx > 0 && m.createLocationIdx <= len(m.config.SecretLocations) {
+			location = m.config.SecretLocations[m.createLocationIdx-1]
+		}
+		// location stays empty for global (index 0)
 		m.loading = true
 		m.loadingMsg = "Creating secret..."
 		// Clear inputs
 		m.createInputs[0].SetValue("")
 		m.createInputs[1].SetValue("")
-		return m, m.createSecret(name, []byte(value))
+		m.createValueArea.SetValue("")
+		m.createLocationIdx = 0
+		m.createEditorMode = false
+		return m, m.createSecret(name, []byte(value), location)
+	case "ctrl+s":
+		// Alternative submit shortcut (useful in editor mode)
+		name := m.createInputs[0].Value()
+		var value string
+		if m.createEditorMode {
+			value = m.createValueArea.Value()
+		} else {
+			value = m.createInputs[1].Value()
+		}
+		if name == "" {
+			m.statusMsg = "Secret name is required"
+			m.statusErr = true
+			return m, nil
+		}
+		var location string
+		if m.createLocationIdx > 0 && m.createLocationIdx <= len(m.config.SecretLocations) {
+			location = m.config.SecretLocations[m.createLocationIdx-1]
+		}
+		m.loading = true
+		m.loadingMsg = "Creating secret..."
+		m.createInputs[0].SetValue("")
+		m.createInputs[1].SetValue("")
+		m.createValueArea.SetValue("")
+		m.createLocationIdx = 0
+		m.createEditorMode = false
+		return m, m.createSecret(name, []byte(value), location)
 	case "esc":
 		m.view = ViewList
 		m.createInputs[0].SetValue("")
 		m.createInputs[1].SetValue("")
+		m.createValueArea.SetValue("")
+		m.createLocationIdx = 0
+		m.createAddingLoc = false
+		m.createEditorMode = false
 		return m, nil
+	case "left", "h":
+		// Navigate location options (only when on location field)
+		if m.createFocus == 2 {
+			m.createLocationIdx--
+			// -1 = add new, 0 = global, 1..n = regions
+			if m.createLocationIdx < -1 {
+				m.createLocationIdx = len(m.config.SecretLocations)
+			}
+			return m, nil
+		}
+	case "right", "l":
+		// Navigate location options (only when on location field)
+		if m.createFocus == 2 {
+			m.createLocationIdx++
+			// -1 = add new, 0 = global, 1..n = regions
+			if m.createLocationIdx > len(m.config.SecretLocations) {
+				m.createLocationIdx = -1
+			}
+			return m, nil
+		}
 	}
 	
-	var cmd tea.Cmd
-	m.createInputs[m.createFocus], cmd = m.createInputs[m.createFocus].Update(msg)
-	return m, cmd
+	// Update focused field
+	if m.createFocus == 0 {
+		var cmd tea.Cmd
+		m.createInputs[0], cmd = m.createInputs[0].Update(msg)
+		return m, cmd
+	} else if m.createFocus == 1 {
+		if m.createEditorMode {
+			var cmd tea.Cmd
+			m.createValueArea, cmd = m.createValueArea.Update(msg)
+			return m, cmd
+		}
+		var cmd tea.Cmd
+		m.createInputs[1], cmd = m.createInputs[1].Update(msg)
+		return m, cmd
+	}
+	return m, nil
 }
 
 func (m Model) updateAddVersion(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -1695,7 +1907,7 @@ func (m Model) View() string {
 		footer = DetailViewBindings()
 	case ViewCreate:
 		content = m.viewCreate()
-		footer = InputViewBindings()
+		footer = CreateViewBindings()
 	case ViewAddVersion:
 		content = m.viewAddVersion()
 		footer = InputViewBindings()
@@ -1973,15 +2185,104 @@ func (m Model) viewCreate() string {
 	b.WriteString(inputStyle.Width(50).Render(m.createInputs[0].View()))
 	b.WriteString("\n\n")
 	
-	// Value input
-	b.WriteString(m.styles.InputLabel.Render("Secret Value:"))
-	b.WriteString("\n")
-	inputStyle = m.styles.Input
-	if m.createFocus == 1 {
-		inputStyle = m.styles.InputFocused
+	// Value input with editor mode toggle
+	valueLabel := "Secret Value:"
+	if m.createEditorMode {
+		valueLabel = "Secret Value (Editor Mode):"
 	}
-	b.WriteString(inputStyle.Width(50).Render(m.createInputs[1].View()))
+	b.WriteString(m.styles.InputLabel.Render(valueLabel))
+	b.WriteString("  ")
+	// Toggle indicator
+	if m.createEditorMode {
+		b.WriteString(m.styles.StatusSuccess.Render("[Editor]"))
+	} else {
+		b.WriteString(m.styles.SubtleText().Render("[Password]"))
+	}
+	b.WriteString(m.styles.SubtleText().Render("  Ctrl+E to toggle"))
 	b.WriteString("\n")
+	
+	if m.createEditorMode {
+		// Show textarea for multiline input
+		areaStyle := m.styles.Input
+		if m.createFocus == 1 {
+			areaStyle = m.styles.InputFocused
+		}
+		b.WriteString(areaStyle.Render(m.createValueArea.View()))
+		b.WriteString("\n")
+		b.WriteString(m.styles.SubtleText().Render("  Ctrl+S to submit • Supports multiline (PEM keys, JSON, etc.)"))
+	} else {
+		// Show password input
+		inputStyle = m.styles.Input
+		if m.createFocus == 1 {
+			inputStyle = m.styles.InputFocused
+		}
+		b.WriteString(inputStyle.Width(50).Render(m.createInputs[1].View()))
+	}
+	b.WriteString("\n\n")
+	
+	// Location selector
+	b.WriteString(m.styles.InputLabel.Render("Location:"))
+	if m.createFocus == 2 {
+		b.WriteString(m.styles.FooterKey.Render(" (←/→ to navigate, Enter to select)"))
+	}
+	b.WriteString("\n")
+	
+	// Show adding new location input
+	if m.createAddingLoc {
+		b.WriteString(m.styles.InputFocused.Width(50).Render(m.createLocInput.View()))
+		b.WriteString("\n")
+		b.WriteString(m.styles.SubtleText().Render("Enter location (e.g. europe-west1) and press Enter"))
+	} else {
+		// Build location options: global first, then saved locations, then add new
+		var locOptions []string
+		
+		// Option 0: Global (automatic replication)
+		globalOption := "🌐 global (automatic replication)"
+		if m.createLocationIdx == 0 {
+			if m.createFocus == 2 {
+				globalOption = m.styles.ListSelected.Render("▶ " + globalOption)
+			} else {
+				globalOption = m.styles.FooterKey.Render("● " + globalOption)
+			}
+		} else {
+			globalOption = m.styles.SubtleText().Render("  " + globalOption)
+		}
+		locOptions = append(locOptions, globalOption)
+		
+		// Options 1..n: Saved locations
+		for i, loc := range m.config.SecretLocations {
+			option := "📍 " + loc
+			if m.createLocationIdx == i+1 { // +1 because 0 is global
+				if m.createFocus == 2 {
+					option = m.styles.ListSelected.Render("▶ " + option)
+				} else {
+					option = m.styles.FooterKey.Render("● " + option)
+				}
+			} else {
+				option = m.styles.SubtleText().Render("  " + option)
+			}
+			locOptions = append(locOptions, option)
+		}
+		
+		// Option -1: Add new location
+		addNewOption := "➕ Add new location..."
+		if m.createLocationIdx == -1 {
+			if m.createFocus == 2 {
+				addNewOption = m.styles.ListSelected.Render("▶ " + addNewOption)
+			} else {
+				addNewOption = m.styles.FooterKey.Render("● " + addNewOption)
+			}
+		} else {
+			addNewOption = m.styles.SubtleText().Render("  " + addNewOption)
+		}
+		locOptions = append(locOptions, addNewOption)
+		
+		// Render options
+		for _, opt := range locOptions {
+			b.WriteString(opt)
+			b.WriteString("\n")
+		}
+	}
 	
 	return m.styles.Dialog.Render(b.String())
 }

@@ -249,19 +249,38 @@ func (c *Client) AccessSecretVersion(ctx context.Context, secretName, version st
 }
 
 // CreateSecret creates a new secret
-func (c *Client) CreateSecret(ctx context.Context, secretName string, labels map[string]string) error {
+// If location is empty, uses automatic replication (global)
+// If location is provided, uses user-managed replication with that region
+func (c *Client) CreateSecret(ctx context.Context, secretName string, labels map[string]string, location string) error {
 	parent := fmt.Sprintf("projects/%s", c.projectID)
+
+	var replication *secretmanagerpb.Replication
+	if location == "" {
+		// Use automatic replication (global)
+		replication = &secretmanagerpb.Replication{
+			Replication: &secretmanagerpb.Replication_Automatic_{
+				Automatic: &secretmanagerpb.Replication_Automatic{},
+			},
+		}
+	} else {
+		// Use user-managed replication with specific location
+		replication = &secretmanagerpb.Replication{
+			Replication: &secretmanagerpb.Replication_UserManaged_{
+				UserManaged: &secretmanagerpb.Replication_UserManaged{
+					Replicas: []*secretmanagerpb.Replication_UserManaged_Replica{
+						{Location: location},
+					},
+				},
+			},
+		}
+	}
 
 	req := &secretmanagerpb.CreateSecretRequest{
 		Parent:   parent,
 		SecretId: secretName,
 		Secret: &secretmanagerpb.Secret{
-			Replication: &secretmanagerpb.Replication{
-				Replication: &secretmanagerpb.Replication_Automatic_{
-					Automatic: &secretmanagerpb.Replication_Automatic{},
-				},
-			},
-			Labels: labels,
+			Replication: replication,
+			Labels:      labels,
 		},
 	}
 
