@@ -179,8 +179,8 @@ func GenerateViewBindings() []FooterBinding {
 	return []FooterBinding{
 		{Key: "↑↓/jk", Desc: "templates"},
 		{Key: "Enter", Desc: "generate"},
+		{Key: "c", Desc: "copy"},
 		{Key: "Esc/h", Desc: "back"},
-		{Key: "^P", Desc: "project"},
 		{Key: "q", Desc: "quit"},
 	}
 }

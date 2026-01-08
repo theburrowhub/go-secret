@@ -1204,7 +1204,25 @@ func (m Model) updateGenerate(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "enter":
 		m.generatedCode = m.generateCode(m.templateCursor)
-	case "esc", "backspace":
+	case "c", "y":
+		// Copy generated code to clipboard
+		if m.generatedCode != "" {
+			err := clipboard.WriteText(m.generatedCode)
+			if err != nil {
+				m.statusMsg = "Failed to copy to clipboard"
+				m.statusErr = true
+			} else {
+				m.statusMsg = "Code copied to clipboard!"
+				m.statusErr = false
+				// Set up clipboard auto-clear if enabled
+				if m.config.Clipboard.AutoClear {
+					m.clipboardClearAt = time.Now().Add(time.Duration(m.config.Clipboard.TimeoutSeconds) * time.Second)
+					m.clipboardActive = true
+					return m, clipboardTickCmd()
+				}
+			}
+		}
+	case "esc", "backspace", "h":
 		m.view = ViewDetail
 		m.generatedCode = ""
 		return m, nil
@@ -2343,6 +2361,8 @@ func (m Model) viewGenerate() string {
 	if m.generatedCode != "" {
 		b.WriteString("\n")
 		b.WriteString(m.styles.InputLabel.Render("Generated Code:"))
+		b.WriteString("  ")
+		b.WriteString(m.styles.SubtleText().Render("(press c to copy)"))
 		b.WriteString("\n")
 		b.WriteString(m.styles.CodeBlock.Render(m.generatedCode))
 	}
