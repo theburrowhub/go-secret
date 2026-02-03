@@ -23,17 +23,21 @@ var (
 // rootCmd represents the base command when called without any subcommands
 var rootCmd = &cobra.Command{
 	Use:   "go-secret",
-	Short: "A security-first TUI for GCP Secret Manager",
-	Long: `go-secret is a terminal user interface for managing
+	Short: "A security-first CLI/TUI for GCP Secret Manager",
+	Long: `go-secret is a command-line and terminal user interface for managing
 Google Cloud Platform Secret Manager secrets.
 
 Features:
-  • Folder-like navigation with configurable separators
+  • Full CLI commands for automation and scripting
+  • Interactive TUI mode for visual navigation
+  • Folder-like organization with configurable separators
   • Real-time filtering and search
   • Version management (view, reveal, add)
   • Code generation from customizable templates
   • Secure memory handling and clipboard auto-clear
-  • Audit logging for compliance`,
+  • Comprehensive audit logging for compliance
+
+Run without arguments to launch the TUI, or use any of the available commands.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		runTUI()
 	},
