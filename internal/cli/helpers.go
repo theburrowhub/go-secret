@@ -80,72 +80,125 @@ func (a *AuditLogger) Close() {
 }
 
 // LogSecretCreate logs a secret creation event.
-func (a *AuditLogger) LogSecretCreate(projectID, secretName, result, details string) {
+func (a *AuditLogger) LogSecretCreate(projectID, secretName string, result audit.EventResult, details string) {
 	if a != nil && a.logger != nil {
 		a.logger.LogSecretCreate(projectID, secretName, result, details)
 	}
 }
 
 // LogSecretDelete logs a secret deletion event.
-func (a *AuditLogger) LogSecretDelete(projectID, secretName, result, details string) {
+func (a *AuditLogger) LogSecretDelete(projectID, secretName string, result audit.EventResult, details string) {
 	if a != nil && a.logger != nil {
 		a.logger.LogSecretDelete(projectID, secretName, result, details)
 	}
 }
 
-// LogSecretRead logs a secret read event.
-func (a *AuditLogger) LogSecretRead(projectID, secretName, version, result, details string) {
+// LogSecretRead logs a secret read event (used for generic read access).
+func (a *AuditLogger) LogSecretRead(projectID, secretName, version string, result audit.EventResult, details string) {
 	if a != nil && a.logger != nil {
-		a.logger.LogSecretRead(projectID, secretName, version, result, details)
+		a.logger.LogSecretAccess(projectID, secretName, version, result, details)
 	}
 }
 
 // LogVersionAdd logs a version addition event.
-func (a *AuditLogger) LogVersionAdd(projectID, secretName, version, result, details string) {
+func (a *AuditLogger) LogVersionAdd(projectID, secretName, version string, result audit.EventResult, details string) {
 	if a != nil && a.logger != nil {
 		a.logger.LogVersionAdd(projectID, secretName, version, result, details)
 	}
 }
 
-// LogVersionEnable logs a version enable event.
-func (a *AuditLogger) LogVersionEnable(projectID, secretName, version, result, details string) {
+// LogVersionEnable logs a version enable event (using generic event logging).
+func (a *AuditLogger) LogVersionEnable(projectID, secretName, version string, result audit.EventResult, details string) {
 	if a != nil && a.logger != nil {
-		a.logger.LogVersionEnable(projectID, secretName, version, result, details)
+		// Use generic Log since there's no specific method for enable
+		_ = a.logger.Log(audit.Event{
+			EventType:  "VERSION_ENABLE",
+			Result:     result,
+			ProjectID:  projectID,
+			SecretName: secretName,
+			Version:    version,
+			Error:      details,
+		})
 	}
 }
 
-// LogVersionDisable logs a version disable event.
-func (a *AuditLogger) LogVersionDisable(projectID, secretName, version, result, details string) {
+// LogVersionDisable logs a version disable event (using generic event logging).
+func (a *AuditLogger) LogVersionDisable(projectID, secretName, version string, result audit.EventResult, details string) {
 	if a != nil && a.logger != nil {
-		a.logger.LogVersionDisable(projectID, secretName, version, result, details)
+		_ = a.logger.Log(audit.Event{
+			EventType:  "VERSION_DISABLE",
+			Result:     result,
+			ProjectID:  projectID,
+			SecretName: secretName,
+			Version:    version,
+			Error:      details,
+		})
 	}
 }
 
-// LogVersionDestroy logs a version destroy event.
-func (a *AuditLogger) LogVersionDestroy(projectID, secretName, version, result, details string) {
+// LogVersionDestroy logs a version destroy event (using generic event logging).
+func (a *AuditLogger) LogVersionDestroy(projectID, secretName, version string, result audit.EventResult, details string) {
 	if a != nil && a.logger != nil {
-		a.logger.LogVersionDestroy(projectID, secretName, version, result, details)
+		_ = a.logger.Log(audit.Event{
+			EventType:  "VERSION_DESTROY",
+			Result:     result,
+			ProjectID:  projectID,
+			SecretName: secretName,
+			Version:    version,
+			Error:      details,
+		})
 	}
 }
 
-// LogTemplateCreate logs a template creation event.
-func (a *AuditLogger) LogTemplateCreate(templateTitle, result, details string) {
+// LogTemplateCreate logs a template creation event (using generic event logging).
+func (a *AuditLogger) LogTemplateCreate(templateTitle string, result audit.EventResult, details string) {
 	if a != nil && a.logger != nil {
-		a.logger.LogTemplateCreate(templateTitle, result, details)
+		_ = a.logger.Log(audit.Event{
+			EventType: "TEMPLATE_CREATE",
+			Result:    result,
+			Details:   map[string]string{"title": templateTitle},
+			Error:     details,
+		})
 	}
 }
 
-// LogTemplateDelete logs a template deletion event.
-func (a *AuditLogger) LogTemplateDelete(templateTitle, result, details string) {
+// LogTemplateDelete logs a template deletion event (using generic event logging).
+func (a *AuditLogger) LogTemplateDelete(templateTitle string, result audit.EventResult, details string) {
 	if a != nil && a.logger != nil {
-		a.logger.LogTemplateDelete(templateTitle, result, details)
+		_ = a.logger.Log(audit.Event{
+			EventType: "TEMPLATE_DELETE",
+			Result:    result,
+			Details:   map[string]string{"title": templateTitle},
+			Error:     details,
+		})
 	}
 }
 
 // LogConfigChange logs a configuration change event.
-func (a *AuditLogger) LogConfigChange(field, oldValue, newValue, result, details string) {
+func (a *AuditLogger) LogConfigChange(field, oldValue, newValue string) {
 	if a != nil && a.logger != nil {
-		a.logger.LogConfigChange(field, oldValue, newValue, result, details)
+		a.logger.LogConfigChange(field, oldValue, newValue)
+	}
+}
+
+// LogSecretCopy logs a secret copy to clipboard event.
+func (a *AuditLogger) LogSecretCopy(projectID, secretName, version string, result audit.EventResult, details string) {
+	if a != nil && a.logger != nil {
+		a.logger.LogSecretCopy(projectID, secretName, version, result, details)
+	}
+}
+
+// LogSecretReveal logs a secret reveal event.
+func (a *AuditLogger) LogSecretReveal(projectID, secretName, version string, result audit.EventResult, details string) {
+	if a != nil && a.logger != nil {
+		a.logger.LogSecretReveal(projectID, secretName, version, result, details)
+	}
+}
+
+// LogSecretList logs a secret listing event.
+func (a *AuditLogger) LogSecretList(projectID string, count int, result audit.EventResult, details string) {
+	if a != nil && a.logger != nil {
+		a.logger.LogSecretList(projectID, count, result, details)
 	}
 }
 

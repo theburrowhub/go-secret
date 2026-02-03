@@ -7,8 +7,8 @@ import (
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
+	"github.com/theburrowhub/go-secret/internal/cli"
 	"github.com/theburrowhub/go-secret/internal/audit"
-	"github.com/theburrowhub/go-secret/internal/config"
 	"github.com/theburrowhub/go-secret/internal/gcp"
 )
 
@@ -44,27 +44,18 @@ func init() {
 func runGet(secretName string) error {
 	ctx := context.Background()
 
-	// Cargar configuración
-	cfg, err := config.Load()
+	// Initialize GCP client using helper
+	cfg, client, proj, err := cli.InitGCPClient(ctx, projectID)
 	if err != nil {
-		return fmt.Errorf("error cargando configuración: %w", err)
-	}
-
-	// Determinar el proyecto a usar
-	proj := projectID
-	if proj == "" {
-		proj = cfg.ProjectID
-	}
-	if proj == "" {
-		return fmt.Errorf("no se especificó project ID. Usa --project o configura un proyecto por defecto")
-	}
-
-	// Crear cliente GCP
-	client, err := gcp.NewClient(ctx, proj)
-	if err != nil {
-		return fmt.Errorf("error creando cliente GCP: %w", err)
+		return err
 	}
 	defer client.Close()
+
+	// Initialize audit logger
+	auditLog := cli.NewAuditLogger(cfg, client)
+	if auditLog != nil {
+		defer auditLog.Close()
+	}
 
 	// Obtener secreto
 	secret, err := client.GetSecret(ctx, secretName)
@@ -81,21 +72,8 @@ func runGet(secretName string) error {
 		}
 	}
 
-	// Registrar en audit log si está habilitado
-	if cfg.Audit.Enabled {
-		auditCfg := audit.Config{
-			Enabled:    cfg.Audit.Enabled,
-			FilePath:   cfg.Audit.FilePath,
-			MaxSizeMB:  cfg.Audit.MaxSizeMB,
-			MaxAgeDays: cfg.Audit.MaxAgeDays,
-		}
-		auditLogger, err := audit.NewLogger(auditCfg)
-		if err == nil {
-			defer auditLogger.Close()
-			auditLogger.SetUser(client.UserEmail())
-			auditLogger.LogSecretAccess(proj, secretName, "", audit.ResultSuccess, "")
-		}
-	}
+	// Log successful operation
+	auditLog.LogSecretRead(proj, secretName, "", audit.ResultSuccess, "")
 
 	// Mostrar resultados según formato
 	switch getOutput {

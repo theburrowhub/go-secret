@@ -7,9 +7,8 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/theburrowhub/go-secret/internal/audit"
+	"github.com/theburrowhub/go-secret/internal/cli"
 	"github.com/theburrowhub/go-secret/internal/clipboard"
-	"github.com/theburrowhub/go-secret/internal/config"
-	"github.com/theburrowhub/go-secret/internal/gcp"
 )
 
 var (
@@ -50,46 +49,23 @@ func init() {
 func runCopy(secretName string) error {
 	ctx := context.Background()
 
-	// Cargar configuración
-	cfg, err := config.Load()
+	// Initialize GCP client using helper
+	cfg, client, proj, err := cli.InitGCPClient(ctx, projectID)
 	if err != nil {
-		return fmt.Errorf("error cargando configuración: %w", err)
-	}
-
-	// Determinar el proyecto a usar
-	proj := projectID
-	if proj == "" {
-		proj = cfg.ProjectID
-	}
-	if proj == "" {
-		return fmt.Errorf("no se especificó project ID. Usa --project o configura un proyecto por defecto")
-	}
-
-	// Crear cliente GCP
-	client, err := gcp.NewClient(ctx, proj)
-	if err != nil {
-		return fmt.Errorf("error creando cliente GCP: %w", err)
+		return err
 	}
 	defer client.Close()
+
+	// Initialize audit logger
+	auditLog := cli.NewAuditLogger(cfg, client)
+	if auditLog != nil {
+		defer auditLog.Close()
+	}
 
 	// Acceder al valor del secreto
 	payload, err := client.AccessSecretVersion(ctx, secretName, copyVersion)
 	if err != nil {
-		// Registrar error en audit log
-		if cfg.Audit.Enabled {
-			auditCfg := audit.Config{
-				Enabled:    cfg.Audit.Enabled,
-				FilePath:   cfg.Audit.FilePath,
-				MaxSizeMB:  cfg.Audit.MaxSizeMB,
-				MaxAgeDays: cfg.Audit.MaxAgeDays,
-			}
-			auditLogger, _ := audit.NewLogger(auditCfg)
-			if auditLogger != nil {
-				defer auditLogger.Close()
-				auditLogger.SetUser(client.UserEmail())
-				auditLogger.LogSecretCopy(proj, secretName, copyVersion, audit.ResultFailure, err.Error())
-			}
-		}
+		auditLog.LogSecretCopy(proj, secretName, copyVersion, audit.ResultFailure, err.Error())
 		return fmt.Errorf("error accediendo al secreto: %w", err)
 	}
 
@@ -98,21 +74,8 @@ func runCopy(secretName string) error {
 		return fmt.Errorf("error copiando al portapapeles: %w", err)
 	}
 
-	// Registrar en audit log si está habilitado
-	if cfg.Audit.Enabled {
-		auditCfg := audit.Config{
-			Enabled:    cfg.Audit.Enabled,
-			FilePath:   cfg.Audit.FilePath,
-			MaxSizeMB:  cfg.Audit.MaxSizeMB,
-			MaxAgeDays: cfg.Audit.MaxAgeDays,
-		}
-		auditLogger, err := audit.NewLogger(auditCfg)
-		if err == nil {
-			defer auditLogger.Close()
-			auditLogger.SetUser(client.UserEmail())
-			auditLogger.LogSecretCopy(proj, secretName, copyVersion, audit.ResultSuccess, "")
-		}
-	}
+	// Log successful operation
+	auditLog.LogSecretCopy(proj, secretName, copyVersion, audit.ResultSuccess, "")
 
 	fmt.Printf("✓ Secreto copiado al portapapeles\n")
 
