@@ -52,7 +52,10 @@ func runGet(secretName string) error {
 	defer client.Close()
 
 	// Initialize audit logger
-	auditLog := cli.NewAuditLogger(cfg, client)
+	auditLog, err := cli.NewAuditLogger(cfg, client)
+	if err != nil {
+		return fmt.Errorf("error inicializando audit logger: %w", err)
+	}
 	if auditLog != nil {
 		defer auditLog.Close()
 	}

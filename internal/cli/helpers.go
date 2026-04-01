@@ -47,10 +47,11 @@ type AuditLogger struct {
 }
 
 // NewAuditLogger creates a new audit logger if audit is enabled in config.
-// Returns nil if audit is disabled or if there's an error (errors are silently ignored).
-func NewAuditLogger(cfg *config.Config, client *gcp.Client) *AuditLogger {
+// Returns nil if audit is disabled, or an error if logger initialization fails.
+// Callers should check for error and handle appropriately for security compliance.
+func NewAuditLogger(cfg *config.Config, client *gcp.Client) (*AuditLogger, error) {
 	if !cfg.Audit.Enabled {
-		return nil
+		return nil, nil
 	}
 
 	auditCfg := audit.Config{
@@ -62,14 +63,14 @@ func NewAuditLogger(cfg *config.Config, client *gcp.Client) *AuditLogger {
 
 	logger, err := audit.NewLogger(auditCfg)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("error inicializando audit logger: %w", err)
 	}
 
 	if client != nil {
 		logger.SetUser(client.UserEmail())
 	}
 
-	return &AuditLogger{logger: logger}
+	return &AuditLogger{logger: logger}, nil
 }
 
 // Close closes the audit logger.
@@ -110,67 +111,76 @@ func (a *AuditLogger) LogVersionAdd(projectID, secretName, version string, resul
 // LogVersionEnable logs a version enable event (using generic event logging).
 func (a *AuditLogger) LogVersionEnable(projectID, secretName, version string, result audit.EventResult, details string) {
 	if a != nil && a.logger != nil {
-		// Use generic Log since there's no specific method for enable
-		_ = a.logger.Log(audit.Event{
+		if err := a.logger.Log(audit.Event{
 			EventType:  "VERSION_ENABLE",
 			Result:     result,
 			ProjectID:  projectID,
 			SecretName: secretName,
 			Version:    version,
 			Error:      details,
-		})
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "⚠️  Advertencia: error escribiendo audit log: %v\n", err)
+		}
 	}
 }
 
 // LogVersionDisable logs a version disable event (using generic event logging).
 func (a *AuditLogger) LogVersionDisable(projectID, secretName, version string, result audit.EventResult, details string) {
 	if a != nil && a.logger != nil {
-		_ = a.logger.Log(audit.Event{
+		if err := a.logger.Log(audit.Event{
 			EventType:  "VERSION_DISABLE",
 			Result:     result,
 			ProjectID:  projectID,
 			SecretName: secretName,
 			Version:    version,
 			Error:      details,
-		})
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "⚠️  Advertencia: error escribiendo audit log: %v\n", err)
+		}
 	}
 }
 
 // LogVersionDestroy logs a version destroy event (using generic event logging).
 func (a *AuditLogger) LogVersionDestroy(projectID, secretName, version string, result audit.EventResult, details string) {
 	if a != nil && a.logger != nil {
-		_ = a.logger.Log(audit.Event{
+		if err := a.logger.Log(audit.Event{
 			EventType:  "VERSION_DESTROY",
 			Result:     result,
 			ProjectID:  projectID,
 			SecretName: secretName,
 			Version:    version,
 			Error:      details,
-		})
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "⚠️  Advertencia: error escribiendo audit log: %v\n", err)
+		}
 	}
 }
 
 // LogTemplateCreate logs a template creation event (using generic event logging).
 func (a *AuditLogger) LogTemplateCreate(templateTitle string, result audit.EventResult, details string) {
 	if a != nil && a.logger != nil {
-		_ = a.logger.Log(audit.Event{
+		if err := a.logger.Log(audit.Event{
 			EventType: "TEMPLATE_CREATE",
 			Result:    result,
 			Details:   map[string]string{"title": templateTitle},
 			Error:     details,
-		})
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "⚠️  Advertencia: error escribiendo audit log: %v\n", err)
+		}
 	}
 }
 
 // LogTemplateDelete logs a template deletion event (using generic event logging).
 func (a *AuditLogger) LogTemplateDelete(templateTitle string, result audit.EventResult, details string) {
 	if a != nil && a.logger != nil {
-		_ = a.logger.Log(audit.Event{
+		if err := a.logger.Log(audit.Event{
 			EventType: "TEMPLATE_DELETE",
 			Result:    result,
 			Details:   map[string]string{"title": templateTitle},
 			Error:     details,
-		})
+		}); err != nil {
+			fmt.Fprintf(os.Stderr, "⚠️  Advertencia: error escribiendo audit log: %v\n", err)
+		}
 	}
 }
 
@@ -199,6 +209,13 @@ func (a *AuditLogger) LogSecretReveal(projectID, secretName, version string, res
 func (a *AuditLogger) LogSecretList(projectID string, count int, result audit.EventResult, details string) {
 	if a != nil && a.logger != nil {
 		a.logger.LogSecretList(projectID, count, result, details)
+	}
+}
+
+// LogClipboardClear logs a clipboard clear event.
+func (a *AuditLogger) LogClipboardClear() {
+	if a != nil && a.logger != nil {
+		a.logger.LogClipboardClear()
 	}
 }
 

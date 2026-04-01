@@ -57,7 +57,10 @@ func runCopy(secretName string) error {
 	defer client.Close()
 
 	// Initialize audit logger
-	auditLog := cli.NewAuditLogger(cfg, client)
+	auditLog, err := cli.NewAuditLogger(cfg, client)
+	if err != nil {
+		return fmt.Errorf("error inicializando audit logger: %w", err)
+	}
 	if auditLog != nil {
 		defer auditLog.Close()
 	}
@@ -96,22 +99,8 @@ func runCopy(secretName string) error {
 			fmt.Printf("⚠️  Error limpiando portapapeles: %v\n", err)
 		} else {
 			fmt.Println("🔒 Portapapeles limpiado")
-
-			// Registrar limpieza en audit log
-			if cfg.Audit.Enabled {
-				auditCfg := audit.Config{
-					Enabled:    cfg.Audit.Enabled,
-					FilePath:   cfg.Audit.FilePath,
-					MaxSizeMB:  cfg.Audit.MaxSizeMB,
-					MaxAgeDays: cfg.Audit.MaxAgeDays,
-				}
-				auditLogger, err := audit.NewLogger(auditCfg)
-				if err == nil {
-					defer auditLogger.Close()
-					auditLogger.SetUser(client.UserEmail())
-					auditLogger.LogClipboardClear()
-				}
-			}
+			// Registrar limpieza en audit log usando el logger existente
+			auditLog.LogClipboardClear()
 		}
 	}
 
