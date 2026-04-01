@@ -61,9 +61,7 @@ func runCopy(secretName string) error {
 	if err != nil {
 		return fmt.Errorf("error inicializando audit logger: %w", err)
 	}
-	if auditLog != nil {
-		defer auditLog.Close()
-	}
+	defer auditLog.Close()
 
 	// Acceder al valor del secreto
 	payload, err := client.AccessSecretVersion(ctx, secretName, copyVersion)

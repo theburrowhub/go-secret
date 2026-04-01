@@ -52,9 +52,17 @@ func runList() error {
 	}
 	defer client.Close()
 
+	// Initialize audit logger before operation to capture both success and failure
+	auditLog, err := cli.NewAuditLogger(cfg, client)
+	if err != nil {
+		return fmt.Errorf("error inicializando audit logger: %w", err)
+	}
+	defer auditLog.Close()
+
 	// List secrets
 	secrets, err := client.ListSecrets(ctx)
 	if err != nil {
+		auditLog.LogSecretList(proj, 0, audit.ResultFailure, err.Error())
 		return fmt.Errorf("error listing secrets: %w", err)
 	}
 
@@ -74,15 +82,8 @@ func runList() error {
 		return secrets[i].Name < secrets[j].Name
 	})
 
-	// Initialize audit logger and log successful operation
-	auditLog, err := cli.NewAuditLogger(cfg, client)
-	if err != nil {
-		return fmt.Errorf("error inicializando audit logger: %w", err)
-	}
-	if auditLog != nil {
-		defer auditLog.Close()
-		auditLog.LogSecretList(proj, len(secrets), audit.ResultSuccess, "")
-	}
+	// Log successful operation
+	auditLog.LogSecretList(proj, len(secrets), audit.ResultSuccess, "")
 
 	// Show results according to format
 	switch listOutput {

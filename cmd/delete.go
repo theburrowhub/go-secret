@@ -65,9 +65,7 @@ func runDelete(secretName string) error {
 	if err != nil {
 		return fmt.Errorf("error inicializando audit logger: %w", err)
 	}
-	if auditLog != nil {
-		defer auditLog.Close()
-	}
+	defer auditLog.Close()
 
 	// Eliminar el secreto
 	if err := client.DeleteSecret(ctx, secretName); err != nil {

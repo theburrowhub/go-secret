@@ -86,9 +86,7 @@ func runCreate(secretName string) error {
 	if err != nil {
 		return fmt.Errorf("error inicializando audit logger: %w", err)
 	}
-	if auditLog != nil {
-		defer auditLog.Close()
-	}
+	defer auditLog.Close()
 
 	// Crear el secreto
 	if err := client.CreateSecret(ctx, secretName, labels, createLocation); err != nil {

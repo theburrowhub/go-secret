@@ -69,9 +69,7 @@ func runAddVersion(secretName string) error {
 	if err != nil {
 		return fmt.Errorf("error inicializando audit logger: %w", err)
 	}
-	if auditLog != nil {
-		defer auditLog.Close()
-	}
+	defer auditLog.Close()
 
 	// Añadir la nueva versión
 	version, err := client.AddSecretVersion(ctx, secretName, value)

@@ -47,11 +47,12 @@ type AuditLogger struct {
 }
 
 // NewAuditLogger creates a new audit logger if audit is enabled in config.
-// Returns nil if audit is disabled, or an error if logger initialization fails.
-// Callers should check for error and handle appropriately for security compliance.
+// Returns a no-op logger if audit is disabled, or an error if logger initialization fails.
+// The returned logger is always safe to use (never nil), so callers can call Log methods unconditionally.
 func NewAuditLogger(cfg *config.Config, client *gcp.Client) (*AuditLogger, error) {
 	if !cfg.Audit.Enabled {
-		return nil, nil
+		// Return a no-op logger instead of nil for safe unconditional usage
+		return &AuditLogger{logger: nil}, nil
 	}
 
 	auditCfg := audit.Config{
