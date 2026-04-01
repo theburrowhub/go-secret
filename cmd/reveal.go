@@ -6,8 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/theburrowhub/go-secret/internal/audit"
-	"github.com/theburrowhub/go-secret/internal/config"
-	"github.com/theburrowhub/go-secret/internal/gcp"
+	"github.com/theburrowhub/go-secret/internal/cli"
 )
 
 var (
@@ -43,64 +42,29 @@ func init() {
 func runReveal(secretName string) error {
 	ctx := context.Background()
 
-	// Cargar configuración
-	cfg, err := config.Load()
+	// Initialize GCP client using helper
+	cfg, client, proj, err := cli.InitGCPClient(ctx, projectID)
 	if err != nil {
-		return fmt.Errorf("error cargando configuración: %w", err)
-	}
-
-	// Determinar el proyecto a usar
-	proj := projectID
-	if proj == "" {
-		proj = cfg.ProjectID
-	}
-	if proj == "" {
-		return fmt.Errorf("no se especificó project ID. Usa --project o configura un proyecto por defecto")
-	}
-
-	// Crear cliente GCP
-	client, err := gcp.NewClient(ctx, proj)
-	if err != nil {
-		return fmt.Errorf("error creando cliente GCP: %w", err)
+		return err
 	}
 	defer client.Close()
+
+	// Initialize audit logger
+	auditLog, err := cli.NewAuditLogger(cfg, client)
+	if err != nil {
+		return fmt.Errorf("error inicializando audit logger: %w", err)
+	}
+	defer auditLog.Close()
 
 	// Acceder al valor del secreto
 	payload, err := client.AccessSecretVersion(ctx, secretName, revealVersion)
 	if err != nil {
-		// Registrar error en audit log
-		if cfg.Audit.Enabled {
-			auditCfg := audit.Config{
-				Enabled:    cfg.Audit.Enabled,
-				FilePath:   cfg.Audit.FilePath,
-				MaxSizeMB:  cfg.Audit.MaxSizeMB,
-				MaxAgeDays: cfg.Audit.MaxAgeDays,
-			}
-			auditLogger, _ := audit.NewLogger(auditCfg)
-			if auditLogger != nil {
-				defer auditLogger.Close()
-				auditLogger.SetUser(client.UserEmail())
-				auditLogger.LogSecretReveal(proj, secretName, revealVersion, audit.ResultFailure, err.Error())
-			}
-		}
+		auditLog.LogSecretReveal(proj, secretName, revealVersion, audit.ResultFailure, err.Error())
 		return fmt.Errorf("error accediendo al secreto: %w", err)
 	}
 
-	// Registrar en audit log si está habilitado
-	if cfg.Audit.Enabled {
-		auditCfg := audit.Config{
-			Enabled:    cfg.Audit.Enabled,
-			FilePath:   cfg.Audit.FilePath,
-			MaxSizeMB:  cfg.Audit.MaxSizeMB,
-			MaxAgeDays: cfg.Audit.MaxAgeDays,
-		}
-		auditLogger, err := audit.NewLogger(auditCfg)
-		if err == nil {
-			defer auditLogger.Close()
-			auditLogger.SetUser(client.UserEmail())
-			auditLogger.LogSecretReveal(proj, secretName, revealVersion, audit.ResultSuccess, "")
-		}
-	}
+	// Log successful operation
+	auditLog.LogSecretReveal(proj, secretName, revealVersion, audit.ResultSuccess, "")
 
 	// Mostrar el valor
 	fmt.Println(string(payload))

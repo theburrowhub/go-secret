@@ -1,18 +1,12 @@
 package cmd
 
 import (
-	"bufio"
 	"context"
 	"fmt"
-	"os"
-	"strings"
-	"syscall"
 
 	"github.com/spf13/cobra"
 	"github.com/theburrowhub/go-secret/internal/audit"
-	"github.com/theburrowhub/go-secret/internal/config"
-	"github.com/theburrowhub/go-secret/internal/gcp"
-	"golang.org/x/term"
+	"github.com/theburrowhub/go-secret/internal/cli"
 )
 
 var (
@@ -64,118 +58,46 @@ func init() {
 func runCreate(secretName string) error {
 	ctx := context.Background()
 
-	// Cargar configuración
-	cfg, err := config.Load()
+	// Initialize GCP client using helper
+	cfg, client, proj, err := cli.InitGCPClient(ctx, projectID)
 	if err != nil {
-		return fmt.Errorf("error cargando configuración: %w", err)
+		return err
 	}
+	defer client.Close()
 
-	// Determinar el proyecto a usar
-	proj := projectID
-	if proj == "" {
-		proj = cfg.ProjectID
-	}
-	if proj == "" {
-		return fmt.Errorf("no se especificó project ID. Usa --project o configura un proyecto por defecto")
-	}
-
-	// Obtener el valor del secreto
-	var value []byte
-	switch {
-	case createFromStdin:
-		// Leer desde stdin
-		scanner := bufio.NewScanner(os.Stdin)
-		var lines []string
-		for scanner.Scan() {
-			lines = append(lines, scanner.Text())
-		}
-		if err := scanner.Err(); err != nil {
-			return fmt.Errorf("error leyendo desde stdin: %w", err)
-		}
-		value = []byte(strings.Join(lines, "\n"))
-
-	case createFromFile != "":
-		// Leer desde archivo
-		fileData, err := os.ReadFile(createFromFile)
-		if err != nil {
-			return fmt.Errorf("error leyendo archivo: %w", err)
-		}
-		value = fileData
-
-	case createValue != "":
-		// Usar valor de flag (no recomendado)
-		value = []byte(createValue)
-
-	default:
-		// Modo interactivo (por defecto)
-		fmt.Printf("Ingresa el valor del secreto (entrada oculta): ")
-		password, err := term.ReadPassword(int(syscall.Stdin))
-		fmt.Println() // Nueva línea después de la entrada
-		if err != nil {
-			return fmt.Errorf("error leyendo valor: %w", err)
-		}
-		value = password
+	// Read secret value using helper
+	value, err := cli.ReadSecretValue(createFromStdin, createFromFile, createValue, "Ingresa el valor del secreto (entrada oculta): ")
+	if err != nil {
+		return err
 	}
 
 	if len(value) == 0 {
 		return fmt.Errorf("el valor del secreto no puede estar vacío")
 	}
 
-	// Parsear etiquetas
-	labels := make(map[string]string)
-	for _, label := range createLabels {
-		parts := strings.SplitN(label, "=", 2)
-		if len(parts) != 2 {
-			return fmt.Errorf("formato de etiqueta inválido: %s (usa key=value)", label)
-		}
-		labels[parts[0]] = parts[1]
+	// Parse labels using helper
+	labels, err := cli.ParseLabels(createLabels)
+	if err != nil {
+		return err
 	}
 
-	// Crear cliente GCP
-	client, err := gcp.NewClient(ctx, proj)
+	// Initialize audit logger
+	auditLog, err := cli.NewAuditLogger(cfg, client)
 	if err != nil {
-		return fmt.Errorf("error creando cliente GCP: %w", err)
+		return fmt.Errorf("error inicializando audit logger: %w", err)
 	}
-	defer client.Close()
+	defer auditLog.Close()
 
 	// Crear el secreto
 	if err := client.CreateSecret(ctx, secretName, labels, createLocation); err != nil {
-		// Registrar error en audit log
-		if cfg.Audit.Enabled {
-			auditCfg := audit.Config{
-				Enabled:    cfg.Audit.Enabled,
-				FilePath:   cfg.Audit.FilePath,
-				MaxSizeMB:  cfg.Audit.MaxSizeMB,
-				MaxAgeDays: cfg.Audit.MaxAgeDays,
-			}
-			auditLogger, _ := audit.NewLogger(auditCfg)
-			if auditLogger != nil {
-				defer auditLogger.Close()
-				auditLogger.SetUser(client.UserEmail())
-				auditLogger.LogSecretCreate(proj, secretName, audit.ResultFailure, err.Error())
-			}
-		}
+		auditLog.LogSecretCreate(proj, secretName, audit.ResultFailure, err.Error())
 		return fmt.Errorf("error creando secreto: %w", err)
 	}
 
 	// Añadir la primera versión con el valor
 	version, err := client.AddSecretVersion(ctx, secretName, value)
 	if err != nil {
-		// Registrar error en audit log
-		if cfg.Audit.Enabled {
-			auditCfg := audit.Config{
-				Enabled:    cfg.Audit.Enabled,
-				FilePath:   cfg.Audit.FilePath,
-				MaxSizeMB:  cfg.Audit.MaxSizeMB,
-				MaxAgeDays: cfg.Audit.MaxAgeDays,
-			}
-			auditLogger, _ := audit.NewLogger(auditCfg)
-			if auditLogger != nil {
-				defer auditLogger.Close()
-				auditLogger.SetUser(client.UserEmail())
-				auditLogger.LogVersionAdd(proj, secretName, "", audit.ResultFailure, err.Error())
-			}
-		}
+		auditLog.LogVersionAdd(proj, secretName, "", audit.ResultFailure, err.Error())
 		return fmt.Errorf("error añadiendo versión inicial: %w", err)
 	}
 
@@ -185,22 +107,9 @@ func runCreate(secretName string) error {
 		_ = cfg.Save()
 	}
 
-	// Registrar en audit log si está habilitado
-	if cfg.Audit.Enabled {
-		auditCfg := audit.Config{
-			Enabled:    cfg.Audit.Enabled,
-			FilePath:   cfg.Audit.FilePath,
-			MaxSizeMB:  cfg.Audit.MaxSizeMB,
-			MaxAgeDays: cfg.Audit.MaxAgeDays,
-		}
-		auditLogger, err := audit.NewLogger(auditCfg)
-		if err == nil {
-			defer auditLogger.Close()
-			auditLogger.SetUser(client.UserEmail())
-			auditLogger.LogSecretCreate(proj, secretName, audit.ResultSuccess, "")
-			auditLogger.LogVersionAdd(proj, secretName, version.Name, audit.ResultSuccess, "")
-		}
-	}
+	// Log successful operations
+	auditLog.LogSecretCreate(proj, secretName, audit.ResultSuccess, "")
+	auditLog.LogVersionAdd(proj, secretName, version.Name, audit.ResultSuccess, "")
 
 	fmt.Printf("✓ Secreto '%s' creado exitosamente\n", secretName)
 	fmt.Printf("  Versión: %s\n", version.Name)
