@@ -15,6 +15,7 @@ import (
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/iterator"
 
+	"github.com/theburrowhub/go-secret/internal/config"
 	"github.com/theburrowhub/go-secret/internal/sources"
 )
 
@@ -60,6 +61,23 @@ func NewClient(ctx context.Context, projectID string) (*Client, error) {
 		projectID: projectID,
 		userEmail: userEmail,
 	}, nil
+}
+
+// NewFromSourceConfig is the canonical constructor used by sources.LoadFromConfig.
+// It instantiates a Client and populates the identity fields from sc.
+func NewFromSourceConfig(ctx context.Context, sc config.SourceConfig) (*Client, error) {
+	if sc.ProjectID == "" {
+		return nil, fmt.Errorf("gsm source %q missing project_id", sc.ID)
+	}
+	c, err := NewClient(ctx, sc.ProjectID)
+	if err != nil {
+		return nil, err
+	}
+	c.id = sc.ID
+	c.displayName = sc.DisplayName
+	c.folderSeparator = sc.FolderSeparator
+	c.locations = sc.SecretLocations
+	return c, nil
 }
 
 // Close closes the client connection
