@@ -981,9 +981,10 @@ func (m Model) updateCreate(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "tab":
 		// Blur current field
-		if m.createFocus == 0 {
+		switch m.createFocus {
+		case 0:
 			m.createInputs[0].Blur()
-		} else if m.createFocus == 1 {
+		case 1:
 			if m.createEditorMode {
 				m.createValueArea.Blur()
 			} else {
@@ -993,10 +994,11 @@ func (m Model) updateCreate(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Move to next field
 		m.createFocus = (m.createFocus + 1) % 3
 		// Focus new field
-		if m.createFocus == 0 {
+		switch m.createFocus {
+		case 0:
 			m.createInputs[0].Focus()
 			return m, textinput.Blink
-		} else if m.createFocus == 1 {
+		case 1:
 			if m.createEditorMode {
 				m.createValueArea.Focus()
 				return m, nil
@@ -1007,9 +1009,10 @@ func (m Model) updateCreate(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "shift+tab":
 		// Blur current field
-		if m.createFocus == 0 {
+		switch m.createFocus {
+		case 0:
 			m.createInputs[0].Blur()
-		} else if m.createFocus == 1 {
+		case 1:
 			if m.createEditorMode {
 				m.createValueArea.Blur()
 			} else {
@@ -1022,10 +1025,11 @@ func (m Model) updateCreate(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.createFocus = 2
 		}
 		// Focus new field
-		if m.createFocus == 0 {
+		switch m.createFocus {
+		case 0:
 			m.createInputs[0].Focus()
 			return m, textinput.Blink
-		} else if m.createFocus == 1 {
+		case 1:
 			if m.createEditorMode {
 				m.createValueArea.Focus()
 				return m, nil
@@ -1134,11 +1138,12 @@ func (m Model) updateCreate(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	
 	// Update focused field
-	if m.createFocus == 0 {
+	switch m.createFocus {
+	case 0:
 		var cmd tea.Cmd
 		m.createInputs[0], cmd = m.createInputs[0].Update(msg)
 		return m, cmd
-	} else if m.createFocus == 1 {
+	case 1:
 		if m.createEditorMode {
 			var cmd tea.Cmd
 			m.createValueArea, cmd = m.createValueArea.Update(msg)
@@ -1508,14 +1513,14 @@ func (m Model) updateConfigSecurity(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 				if newLogger, err := audit.NewLogger(auditCfg); err == nil {
 					if m.auditLogger != nil {
-						m.auditLogger.Close()
+						_ = m.auditLogger.Close()
 					}
 					m.auditLogger = newLogger
 				}
 			} else {
 				m.statusMsg = "○ Audit logging disabled"
 				if m.auditLogger != nil {
-					m.auditLogger.Close()
+					_ = m.auditLogger.Close()
 					m.auditLogger = nil
 				}
 			}
@@ -2158,10 +2163,11 @@ func (m Model) viewDetail() string {
 		for i, v := range m.versions {
 			stateIcon := "✓"
 			stateStyle := m.styles.StatusSuccess
-			if v.State == "DISABLED" {
+			switch v.State {
+			case "DISABLED":
 				stateIcon = "○"
 				stateStyle = m.styles.StatusWarning
-			} else if v.State == "DESTROYED" {
+			case "DESTROYED":
 				stateIcon = "✕"
 				stateStyle = m.styles.StatusError
 			}

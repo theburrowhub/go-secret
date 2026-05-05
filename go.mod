@@ -10,6 +10,7 @@ require (
 	github.com/spf13/cobra v1.10.2
 	golang.design/x/clipboard v0.7.1
 	golang.org/x/oauth2 v0.24.0
+	golang.org/x/term v0.39.0
 	google.golang.org/api v0.209.0
 	gopkg.in/yaml.v3 v3.0.1
 )
@@ -53,7 +54,7 @@ require (
 	golang.org/x/mobile v0.0.0-20251126181937-5c265dc024c4 // indirect
 	golang.org/x/net v0.31.0 // indirect
 	golang.org/x/sync v0.19.0 // indirect
-	golang.org/x/sys v0.39.0 // indirect
+	golang.org/x/sys v0.40.0 // indirect
 	golang.org/x/text v0.32.0 // indirect
 	golang.org/x/time v0.8.0 // indirect
 	google.golang.org/genproto v0.0.0-20241113202542-65e8d215514f // indirect
