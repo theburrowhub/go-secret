@@ -136,7 +136,7 @@ func runCreate(secretName string) error {
 	if err != nil {
 		return fmt.Errorf("error creando cliente GCP: %w", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Crear el secreto
 	if err := client.CreateSecret(ctx, secretName, labels, createLocation); err != nil {
@@ -150,7 +150,7 @@ func runCreate(secretName string) error {
 			}
 			auditLogger, _ := audit.NewLogger(auditCfg)
 			if auditLogger != nil {
-				defer auditLogger.Close()
+				defer func() { _ = auditLogger.Close() }()
 				auditLogger.SetUser(client.UserEmail())
 				auditLogger.LogSecretCreate(proj, secretName, audit.ResultFailure, err.Error())
 			}
@@ -171,7 +171,7 @@ func runCreate(secretName string) error {
 			}
 			auditLogger, _ := audit.NewLogger(auditCfg)
 			if auditLogger != nil {
-				defer auditLogger.Close()
+				defer func() { _ = auditLogger.Close() }()
 				auditLogger.SetUser(client.UserEmail())
 				auditLogger.LogVersionAdd(proj, secretName, "", audit.ResultFailure, err.Error())
 			}
@@ -195,7 +195,7 @@ func runCreate(secretName string) error {
 		}
 		auditLogger, err := audit.NewLogger(auditCfg)
 		if err == nil {
-			defer auditLogger.Close()
+			defer func() { _ = auditLogger.Close() }()
 			auditLogger.SetUser(client.UserEmail())
 			auditLogger.LogSecretCreate(proj, secretName, audit.ResultSuccess, "")
 			auditLogger.LogVersionAdd(proj, secretName, version.Name, audit.ResultSuccess, "")

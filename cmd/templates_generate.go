@@ -78,7 +78,7 @@ func runTemplatesGenerate(secretName string) error {
 	if err != nil {
 		return fmt.Errorf("error creando cliente GCP: %w", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Preparar datos para la plantilla
 	data := struct {

@@ -152,7 +152,7 @@ func runConfigSet(key, value string) error {
 		}
 		auditLogger, err := audit.NewLogger(auditCfg)
 		if err == nil {
-			defer auditLogger.Close()
+			defer func() { _ = auditLogger.Close() }()
 			auditLogger.LogConfigChange(setting, oldValue, value)
 		}
 	}

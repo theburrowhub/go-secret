@@ -63,7 +63,7 @@ func runReveal(secretName string) error {
 	if err != nil {
 		return fmt.Errorf("error creando cliente GCP: %w", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Acceder al valor del secreto
 	payload, err := client.AccessSecretVersion(ctx, secretName, revealVersion)
@@ -78,7 +78,7 @@ func runReveal(secretName string) error {
 			}
 			auditLogger, _ := audit.NewLogger(auditCfg)
 			if auditLogger != nil {
-				defer auditLogger.Close()
+				defer func() { _ = auditLogger.Close() }()
 				auditLogger.SetUser(client.UserEmail())
 				auditLogger.LogSecretReveal(proj, secretName, revealVersion, audit.ResultFailure, err.Error())
 			}
@@ -96,7 +96,7 @@ func runReveal(secretName string) error {
 		}
 		auditLogger, err := audit.NewLogger(auditCfg)
 		if err == nil {
-			defer auditLogger.Close()
+			defer func() { _ = auditLogger.Close() }()
 			auditLogger.SetUser(client.UserEmail())
 			auditLogger.LogSecretReveal(proj, secretName, revealVersion, audit.ResultSuccess, "")
 		}

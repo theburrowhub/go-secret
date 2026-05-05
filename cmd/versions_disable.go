@@ -53,7 +53,7 @@ func runVersionsDisable(secretName, version string) error {
 	if err != nil {
 		return fmt.Errorf("error creando cliente GCP: %w", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Deshabilitar la versión
 	if err := client.DisableSecretVersion(ctx, secretName, version); err != nil {

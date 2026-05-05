@@ -65,7 +65,7 @@ func runList() error {
 	if err != nil {
 		return fmt.Errorf("error creating GCP client: %w", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// List secrets
 	secrets, err := client.ListSecrets(ctx)
@@ -99,7 +99,7 @@ func runList() error {
 		}
 		auditLogger, err := audit.NewLogger(auditCfg)
 		if err == nil {
-			defer auditLogger.Close()
+			defer func() { _ = auditLogger.Close() }()
 			auditLogger.SetUser(client.UserEmail())
 			auditLogger.LogSecretList(proj, len(secrets), audit.ResultSuccess, "")
 		}
@@ -123,8 +123,8 @@ func outputTable(secrets []gcp.Secret, separator string) error {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-	fmt.Fprintln(w, "NAME\tCREATED\tREPLICATION")
-	fmt.Fprintln(w, "----\t-------\t-----------")
+	_, _ = fmt.Fprintln(w, "NAME\tCREATED\tREPLICATION")
+	_, _ = fmt.Fprintln(w, "----\t-------\t-----------")
 
 	for _, s := range secrets {
 		// Show folder structure if using separator
@@ -133,10 +133,10 @@ func outputTable(secrets []gcp.Secret, separator string) error {
 			name = strings.ReplaceAll(name, separator, "/")
 		}
 
-		fmt.Fprintf(w, "%s\t%s\t%s\n", name, s.CreateTime, s.Replication)
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\n", name, s.CreateTime, s.Replication)
 	}
 
-	w.Flush()
+	_ = w.Flush()
 	fmt.Printf("\nTotal: %d secrets\n", len(secrets))
 	return nil
 }

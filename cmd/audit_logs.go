@@ -71,7 +71,7 @@ func runAuditLogs() error {
 	if err != nil {
 		return fmt.Errorf("error creando logger de auditoría: %w", err)
 	}
-	defer auditLogger.Close()
+	defer func() { _ = auditLogger.Close() }()
 
 	// Leer logs recientes
 	lines, err := auditLogger.ReadRecentLogs(auditLogsCount)
@@ -112,14 +112,14 @@ func runAuditLogs() error {
 	} else {
 		// Modo formateado: tabla
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(w, "TIMESTAMP\tR\tEVENTO\tUSUARIO\tSECRETO")
-		fmt.Fprintln(w, "---------\t-\t------\t-------\t-------")
+		_, _ = fmt.Fprintln(w, "TIMESTAMP\tR\tEVENTO\tUSUARIO\tSECRETO")
+		_, _ = fmt.Fprintln(w, "---------\t-\t------\t-------\t-------")
 
 		for _, line := range lines {
 			var event audit.Event
 			if err := json.Unmarshal([]byte(line), &event); err != nil {
 				// Si no se puede parsear, mostrar línea tal cual
-				fmt.Fprintln(w, line)
+				_, _ = fmt.Fprintln(w, line)
 				continue
 			}
 
@@ -154,11 +154,11 @@ func runAuditLogs() error {
 				result = "✗"
 			}
 
-			fmt.Fprintf(w, "%s\t%s\t%-16s\t%-20s\t%s\n",
+			_, _ = fmt.Fprintf(w, "%s\t%s\t%-16s\t%-20s\t%s\n",
 				timestamp, result, event.EventType, user, secret)
 		}
 
-		w.Flush()
+		_ = w.Flush()
 		fmt.Printf("\nMostrando %d de %d entradas más recientes\n", len(lines), auditLogsCount)
 	}
 

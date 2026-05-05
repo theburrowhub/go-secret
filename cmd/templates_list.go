@@ -41,16 +41,12 @@ func runTemplatesList() error {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-	fmt.Fprintln(w, "#\tTÍTULO\tVISTA PREVIA")
-	fmt.Fprintln(w, "-\t------\t------------")
+	_, _ = fmt.Fprintln(w, "#\tTÍTULO\tVISTA PREVIA")
+	_, _ = fmt.Fprintln(w, "-\t------\t------------")
 
 	for i, t := range cfg.Templates {
-		preview := t.Code
-		if len(preview) > 60 {
-			preview = preview[:57] + "..."
-		}
 		// Reemplazar saltos de línea para mostrar en una línea
-		preview = ""
+		preview := ""
 		lines := 0
 		for _, ch := range t.Code {
 			if ch == '\n' {
@@ -68,10 +64,10 @@ func runTemplatesList() error {
 			preview = preview[:57] + "..."
 		}
 
-		fmt.Fprintf(w, "%d\t%s\t%s\n", i+1, t.Title, preview)
+		_, _ = fmt.Fprintf(w, "%d\t%s\t%s\n", i+1, t.Title, preview)
 	}
 
-	w.Flush()
+	_ = w.Flush()
 	fmt.Printf("\nTotal: %d plantillas\n", len(cfg.Templates))
 	fmt.Println("\nVariables disponibles:")
 	fmt.Println("  {{.SecretName}}     - Nombre del secreto")

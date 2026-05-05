@@ -81,7 +81,7 @@ func runVersionsDestroy(secretName, version string) error {
 	if err != nil {
 		return fmt.Errorf("error creando cliente GCP: %w", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Destruir la versión
 	if err := client.DestroySecretVersion(ctx, secretName, version); err != nil {

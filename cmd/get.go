@@ -64,7 +64,7 @@ func runGet(secretName string) error {
 	if err != nil {
 		return fmt.Errorf("error creando cliente GCP: %w", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Obtener secreto
 	secret, err := client.GetSecret(ctx, secretName)
@@ -91,7 +91,7 @@ func runGet(secretName string) error {
 		}
 		auditLogger, err := audit.NewLogger(auditCfg)
 		if err == nil {
-			defer auditLogger.Close()
+			defer func() { _ = auditLogger.Close() }()
 			auditLogger.SetUser(client.UserEmail())
 			auditLogger.LogSecretAccess(proj, secretName, "", audit.ResultSuccess, "")
 		}
@@ -111,34 +111,34 @@ func runGet(secretName string) error {
 func outputGetTable(secret *gcp.Secret, versions []gcp.SecretVersion) error {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
 
-	fmt.Fprintln(w, "CAMPO\tVALOR")
-	fmt.Fprintln(w, "-----\t-----")
-	fmt.Fprintf(w, "Nombre\t%s\n", secret.Name)
-	fmt.Fprintf(w, "Nombre completo\t%s\n", secret.FullName)
-	fmt.Fprintf(w, "Creado\t%s\n", secret.CreateTime)
-	fmt.Fprintf(w, "Replicación\t%s\n", secret.Replication)
+	_, _ = fmt.Fprintln(w, "CAMPO\tVALOR")
+	_, _ = fmt.Fprintln(w, "-----\t-----")
+	_, _ = fmt.Fprintf(w, "Nombre\t%s\n", secret.Name)
+	_, _ = fmt.Fprintf(w, "Nombre completo\t%s\n", secret.FullName)
+	_, _ = fmt.Fprintf(w, "Creado\t%s\n", secret.CreateTime)
+	_, _ = fmt.Fprintf(w, "Replicación\t%s\n", secret.Replication)
 
 	if len(secret.Labels) > 0 {
-		fmt.Fprintf(w, "Etiquetas\t")
+		_, _ = fmt.Fprintf(w, "Etiquetas\t")
 		first := true
 		for k, v := range secret.Labels {
 			if !first {
-				fmt.Fprintf(w, ", ")
+				_, _ = fmt.Fprintf(w, ", ")
 			}
-			fmt.Fprintf(w, "%s=%s", k, v)
+			_, _ = fmt.Fprintf(w, "%s=%s", k, v)
 			first = false
 		}
-		fmt.Fprintf(w, "\n")
+		_, _ = fmt.Fprintf(w, "\n")
 	}
 
-	w.Flush()
+	_ = w.Flush()
 
 	if len(versions) > 0 {
 		fmt.Println("\nVersiones:")
 		fmt.Println()
 		w = tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-		fmt.Fprintln(w, "VERSIÓN\tESTADO\tCREADA")
-		fmt.Fprintln(w, "-------\t------\t------")
+		_, _ = fmt.Fprintln(w, "VERSIÓN\tESTADO\tCREADA")
+		_, _ = fmt.Fprintln(w, "-------\t------\t------")
 
 		for _, v := range versions {
 			state := v.State
@@ -151,9 +151,9 @@ func outputGetTable(secret *gcp.Secret, versions []gcp.SecretVersion) error {
 			case "STATE_DESTROYED":
 				state = "✕ DESTROYED"
 			}
-			fmt.Fprintf(w, "%s\t%s\t%s\n", v.Name, state, v.CreateTime)
+			_, _ = fmt.Fprintf(w, "%s\t%s\t%s\n", v.Name, state, v.CreateTime)
 		}
-		w.Flush()
+		_ = w.Flush()
 		fmt.Printf("\nTotal: %d versiones\n", len(versions))
 	}
 

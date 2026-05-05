@@ -90,18 +90,18 @@ func runConfigProjectsList() error {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-	fmt.Fprintln(w, "#\tPROYECTO\tACTUAL")
-	fmt.Fprintln(w, "-\t--------\t------")
+	_, _ = fmt.Fprintln(w, "#\tPROYECTO\tACTUAL")
+	_, _ = fmt.Fprintln(w, "-\t--------\t------")
 
 	for i, p := range cfg.RecentProjects {
 		current := ""
 		if p == cfg.ProjectID {
 			current = "✓"
 		}
-		fmt.Fprintf(w, "%d\t%s\t%s\n", i+1, p, current)
+		_, _ = fmt.Fprintf(w, "%d\t%s\t%s\n", i+1, p, current)
 	}
 
-	w.Flush()
+	_ = w.Flush()
 	fmt.Printf("\nTotal: %d proyectos\n", len(cfg.RecentProjects))
 
 	return nil
@@ -187,7 +187,7 @@ func runConfigProjectsSwitch(projectID string) error {
 		}
 		auditLogger, err := audit.NewLogger(auditCfg)
 		if err == nil {
-			defer auditLogger.Close()
+			defer func() { _ = auditLogger.Close() }()
 			auditLogger.LogProjectSwitch(oldProject, projectID)
 		}
 	}

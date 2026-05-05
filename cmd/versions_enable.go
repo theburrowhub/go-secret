@@ -53,7 +53,7 @@ func runVersionsEnable(secretName, version string) error {
 	if err != nil {
 		return fmt.Errorf("error creando cliente GCP: %w", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Habilitar la versión
 	if err := client.EnableSecretVersion(ctx, secretName, version); err != nil {

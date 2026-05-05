@@ -60,7 +60,7 @@ func runVersionsList(secretName string) error {
 	if err != nil {
 		return fmt.Errorf("error creando cliente GCP: %w", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// Listar versiones
 	versions, err := client.ListSecretVersions(ctx, secretName)
@@ -78,7 +78,7 @@ func runVersionsList(secretName string) error {
 		}
 		auditLogger, err := audit.NewLogger(auditCfg)
 		if err == nil {
-			defer auditLogger.Close()
+			defer func() { _ = auditLogger.Close() }()
 			auditLogger.SetUser(client.UserEmail())
 			_ = auditLogger.Log(audit.Event{
 				EventType:  audit.EventVersionList,
@@ -96,8 +96,8 @@ func runVersionsList(secretName string) error {
 
 	// Mostrar tabla de versiones
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-	fmt.Fprintln(w, "VERSIÓN\tESTADO\tCREADA")
-	fmt.Fprintln(w, "-------\t------\t------")
+	_, _ = fmt.Fprintln(w, "VERSIÓN\tESTADO\tCREADA")
+	_, _ = fmt.Fprintln(w, "-------\t------\t------")
 
 	for _, v := range versions {
 		state := v.State
@@ -110,10 +110,10 @@ func runVersionsList(secretName string) error {
 		case "STATE_DESTROYED":
 			state = "✕ DESTROYED"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\n", v.Name, state, v.CreateTime)
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\n", v.Name, state, v.CreateTime)
 	}
 
-	w.Flush()
+	_ = w.Flush()
 	fmt.Printf("\nTotal: %d versiones\n", len(versions))
 
 	return nil
