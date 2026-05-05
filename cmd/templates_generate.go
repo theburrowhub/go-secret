@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"strings"
 	"text/template"
+	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/theburrowhub/go-secret/internal/clipboard"
 	"github.com/theburrowhub/go-secret/internal/config"
 	"github.com/theburrowhub/go-secret/internal/gcp"
 )
@@ -112,9 +114,22 @@ func runTemplatesGenerate(secretName string) error {
 
 	// Copiar al portapapeles si se solicitó
 	if templateGenerateCopy {
-		// Importar clipboard aquí solo si se necesita
-		// Para evitar problemas de inicialización
+		if err := clipboard.WriteText(result); err != nil {
+			return fmt.Errorf("error copiando al portapapeles: %w", err)
+		}
 		fmt.Println("\n✓ Código copiado al portapapeles")
+
+		// Auto-clear si está configurado
+		if cfg.Clipboard.AutoClear && cfg.Clipboard.TimeoutSeconds > 0 {
+			timeout := cfg.Clipboard.TimeoutSeconds
+			fmt.Printf("  El portapapeles se limpiará en %d segundos...\n", timeout)
+			time.Sleep(time.Duration(timeout) * time.Second)
+			if err := clipboard.Clear(); err != nil {
+				fmt.Printf("⚠️  Error limpiando portapapeles: %v\n", err)
+			} else {
+				fmt.Println("🔒 Portapapeles limpiado")
+			}
+		}
 	}
 
 	return nil
