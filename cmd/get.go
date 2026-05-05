@@ -9,7 +9,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/theburrowhub/go-secret/internal/audit"
 	"github.com/theburrowhub/go-secret/internal/config"
-	"github.com/theburrowhub/go-secret/internal/gcp"
+	"github.com/theburrowhub/go-secret/internal/providers/gsm"
 )
 
 var (
@@ -60,7 +60,7 @@ func runGet(secretName string) error {
 	}
 
 	// Crear cliente GCP
-	client, err := gcp.NewClient(ctx, proj)
+	client, err := gsm.NewClient(ctx, proj)
 	if err != nil {
 		return fmt.Errorf("error creando cliente GCP: %w", err)
 	}
@@ -73,7 +73,7 @@ func runGet(secretName string) error {
 	}
 
 	// Obtener versiones si se solicitó
-	var versions []gcp.SecretVersion
+	var versions []gsm.SecretVersion
 	if getVersions {
 		versions, err = client.ListSecretVersions(ctx, secretName)
 		if err != nil {
@@ -108,7 +108,7 @@ func runGet(secretName string) error {
 	}
 }
 
-func outputGetTable(secret *gcp.Secret, versions []gcp.SecretVersion) error {
+func outputGetTable(secret *gsm.Secret, versions []gsm.SecretVersion) error {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
 
 	_, _ = fmt.Fprintln(w, "CAMPO\tVALOR")
@@ -160,7 +160,7 @@ func outputGetTable(secret *gcp.Secret, versions []gcp.SecretVersion) error {
 	return nil
 }
 
-func outputGetJSON(secret *gcp.Secret, versions []gcp.SecretVersion) error {
+func outputGetJSON(secret *gsm.Secret, versions []gsm.SecretVersion) error {
 	fmt.Printf("{\n")
 	fmt.Printf("  \"name\": \"%s\",\n", secret.Name)
 	fmt.Printf("  \"full_name\": \"%s\",\n", secret.FullName)
@@ -198,7 +198,7 @@ func outputGetJSON(secret *gcp.Secret, versions []gcp.SecretVersion) error {
 	return nil
 }
 
-func outputGetYAML(secret *gcp.Secret, versions []gcp.SecretVersion) error {
+func outputGetYAML(secret *gsm.Secret, versions []gsm.SecretVersion) error {
 	fmt.Printf("name: %s\n", secret.Name)
 	fmt.Printf("full_name: %s\n", secret.FullName)
 	fmt.Printf("created: %s\n", secret.CreateTime)

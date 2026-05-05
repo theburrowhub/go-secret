@@ -11,7 +11,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/theburrowhub/go-secret/internal/audit"
 	"github.com/theburrowhub/go-secret/internal/config"
-	"github.com/theburrowhub/go-secret/internal/gcp"
+	"github.com/theburrowhub/go-secret/internal/providers/gsm"
 )
 
 var (
@@ -61,7 +61,7 @@ func runList() error {
 	}
 
 	// Create GCP client
-	client, err := gcp.NewClient(ctx, proj)
+	client, err := gsm.NewClient(ctx, proj)
 	if err != nil {
 		return fmt.Errorf("error creating GCP client: %w", err)
 	}
@@ -75,7 +75,7 @@ func runList() error {
 
 	// Filter if specified
 	if listFilter != "" {
-		filtered := make([]gcp.Secret, 0)
+		filtered := make([]gsm.Secret, 0)
 		for _, s := range secrets {
 			if strings.Contains(strings.ToLower(s.Name), strings.ToLower(listFilter)) {
 				filtered = append(filtered, s)
@@ -116,7 +116,7 @@ func runList() error {
 	}
 }
 
-func outputTable(secrets []gcp.Secret, separator string) error {
+func outputTable(secrets []gsm.Secret, separator string) error {
 	if len(secrets) == 0 {
 		fmt.Println("No secrets found")
 		return nil
@@ -141,7 +141,7 @@ func outputTable(secrets []gcp.Secret, separator string) error {
 	return nil
 }
 
-func outputJSON(secrets []gcp.Secret) error {
+func outputJSON(secrets []gsm.Secret) error {
 	// Simple JSON output implementation
 	fmt.Println("[")
 	for i, s := range secrets {
@@ -156,7 +156,7 @@ func outputJSON(secrets []gcp.Secret) error {
 	return nil
 }
 
-func outputYAML(secrets []gcp.Secret) error {
+func outputYAML(secrets []gsm.Secret) error {
 	// Simple YAML output implementation
 	fmt.Println("secrets:")
 	for _, s := range secrets {

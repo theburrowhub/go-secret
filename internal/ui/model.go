@@ -17,7 +17,7 @@ import (
 	"github.com/theburrowhub/go-secret/internal/audit"
 	"github.com/theburrowhub/go-secret/internal/clipboard"
 	"github.com/theburrowhub/go-secret/internal/config"
-	"github.com/theburrowhub/go-secret/internal/gcp"
+	"github.com/theburrowhub/go-secret/internal/providers/gsm"
 )
 
 // View represents the current view state
@@ -50,7 +50,7 @@ type FolderItem struct {
 	Name       string
 	FullPath   string
 	IsFolder   bool
-	Secret     *gcp.Secret
+	Secret     *gsm.Secret
 	Children   map[string]*FolderItem
 	Depth      int
 }
@@ -61,7 +61,7 @@ type Model struct {
 	config *config.Config
 	
 	// GCP client
-	client *gcp.Client
+	client *gsm.Client
 	ctx    context.Context
 	
 	// UI state
@@ -73,7 +73,7 @@ type Model struct {
 	keys           KeyMap
 	
 	// List view state
-	secrets        []gcp.Secret
+	secrets        []gsm.Secret
 	folderTree     *FolderItem
 	currentPath    []string
 	displayItems   []*FolderItem
@@ -83,8 +83,8 @@ type Model struct {
 	filterInput    textinput.Model
 	
 	// Detail view state
-	selectedSecret *gcp.Secret
-	versions       []gcp.SecretVersion
+	selectedSecret *gsm.Secret
+	versions       []gsm.SecretVersion
 	versionCursor  int
 	revealedValue  []byte // Stored as []byte for secure memory handling
 	revealVersion  string
@@ -163,12 +163,12 @@ type Model struct {
 
 // Messages
 type secretsLoadedMsg struct {
-	secrets []gcp.Secret
+	secrets []gsm.Secret
 	err     error
 }
 
 type versionsLoadedMsg struct {
-	versions []gcp.SecretVersion
+	versions []gsm.SecretVersion
 	err      error
 }
 
@@ -183,7 +183,7 @@ type secretDeletedMsg struct {
 }
 
 type versionAddedMsg struct {
-	version *gcp.SecretVersion
+	version *gsm.SecretVersion
 	err     error
 }
 
@@ -201,7 +201,7 @@ type secretCopiedMsg struct {
 }
 
 type clientInitializedMsg struct {
-	client *gcp.Client
+	client *gsm.Client
 	err    error
 }
 
@@ -344,7 +344,7 @@ func (m Model) Init() tea.Cmd {
 
 func (m Model) initializeClient() tea.Cmd {
 	return func() tea.Msg {
-		client, err := gcp.NewClient(m.ctx, m.config.ProjectID)
+		client, err := gsm.NewClient(m.ctx, m.config.ProjectID)
 		if err != nil {
 			return clientInitializedMsg{err: err}
 		}

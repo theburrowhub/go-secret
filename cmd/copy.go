@@ -9,7 +9,7 @@ import (
 	"github.com/theburrowhub/go-secret/internal/audit"
 	"github.com/theburrowhub/go-secret/internal/clipboard"
 	"github.com/theburrowhub/go-secret/internal/config"
-	"github.com/theburrowhub/go-secret/internal/gcp"
+	"github.com/theburrowhub/go-secret/internal/providers/gsm"
 )
 
 var (
@@ -66,7 +66,7 @@ func runCopy(secretName string) error {
 	}
 
 	// Crear cliente GCP
-	client, err := gcp.NewClient(ctx, proj)
+	client, err := gsm.NewClient(ctx, proj)
 	if err != nil {
 		return fmt.Errorf("error creando cliente GCP: %w", err)
 	}
