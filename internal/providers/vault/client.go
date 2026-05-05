@@ -101,24 +101,67 @@ func (c *Client) Capabilities() sources.Capabilities {
 	}
 }
 
-// List implements sources.Provider. Full implementation in Task 12.
+// List implements sources.Provider. Dispatches to KV v1 or v2 per mount.
 func (c *Client) List(ctx context.Context) ([]sources.Secret, error) {
-	return nil, errors.New("vault.Client.List not implemented")
+	out := []sources.Secret{}
+	for _, m := range c.mounts {
+		var (
+			items []sources.Secret
+			err   error
+		)
+		switch m.Version {
+		case 2, 0: // 0 = auto-detect, default to v2
+			items, err = c.listKV2(ctx, m)
+		case 1:
+			items, err = c.listKV1(ctx, m) // implemented in Task 13
+		default:
+			err = fmt.Errorf("mount %q has unsupported version %d", m.Path, m.Version)
+		}
+		if err != nil {
+			return out, fmt.Errorf("mount %q: %w", m.Path, err)
+		}
+		out = append(out, items...)
+	}
+	return out, nil
 }
 
-// Get implements sources.Provider. Full implementation in Task 12.
+// Get implements sources.Provider. Dispatches to KV v1 or v2.
 func (c *Client) Get(ctx context.Context, name string) (*sources.Secret, error) {
-	return nil, errors.New("vault.Client.Get not implemented")
+	m, rel, err := c.resolveMount(name)
+	if err != nil {
+		return nil, err
+	}
+	if m.Version == 1 {
+		return c.getKV1(ctx, m, rel)
+	}
+	return c.getKV2(ctx, m, rel)
 }
 
-// Reveal implements sources.Provider. Full implementation in Task 12.
+// Reveal implements sources.Provider. Dispatches to KV v1 or v2.
 func (c *Client) Reveal(ctx context.Context, name, version string) ([]byte, error) {
-	return nil, errors.New("vault.Client.Reveal not implemented")
+	m, rel, err := c.resolveMount(name)
+	if err != nil {
+		return nil, err
+	}
+	if m.Version == 1 {
+		if version != "" && version != "latest" {
+			return nil, sources.WrapNotSupported("Vault KV v1 has no versions")
+		}
+		return c.revealKV1(ctx, m, rel)
+	}
+	return c.revealKV2(ctx, m, rel, version)
 }
 
-// ListVersions implements sources.Provider. Full implementation in Task 13.
+// ListVersions implements sources.Provider. KV v2 only.
 func (c *Client) ListVersions(ctx context.Context, name string) ([]sources.Version, error) {
-	return nil, errors.New("vault.Client.ListVersions not implemented")
+	m, rel, err := c.resolveMount(name)
+	if err != nil {
+		return nil, err
+	}
+	if m.Version == 1 {
+		return nil, sources.WrapNotSupported("Vault KV v1 has no versions")
+	}
+	return c.listVersionsKV2(ctx, m, rel)
 }
 
 // Create implements sources.Provider. Full implementation in Task 12.
