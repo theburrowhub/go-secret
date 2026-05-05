@@ -34,16 +34,55 @@ type SessionConfig struct {
 	LockOnTimeout     bool `yaml:"lock_on_timeout"`
 }
 
+// SourceConfig describes one secret backend. Either ProjectID (for "gsm")
+// or Address+Auth+Mounts (for "vault") is populated, never both.
+type SourceConfig struct {
+	ID              string     `yaml:"id"`
+	Provider        string     `yaml:"provider"`
+	Enabled         bool       `yaml:"enabled"`
+	DisplayName     string     `yaml:"display_name,omitempty"`
+	FolderSeparator string     `yaml:"folder_separator,omitempty"`
+	Templates       []Template `yaml:"templates,omitempty"`
+
+	// GSM
+	ProjectID       string   `yaml:"project_id,omitempty"`
+	SecretLocations []string `yaml:"secret_locations,omitempty"`
+
+	// Vault
+	Address string          `yaml:"address,omitempty"`
+	Auth    VaultAuthConfig `yaml:"auth,omitempty"`
+	Mounts  []VaultMount    `yaml:"mounts,omitempty"`
+}
+
+// VaultAuthConfig describes how to authenticate against a Vault source.
+type VaultAuthConfig struct {
+	Method        string `yaml:"method"`
+	Role          string `yaml:"role,omitempty"`
+	OIDCPort      int    `yaml:"oidc_port,omitempty"`
+	AppRoleRoleID string `yaml:"role_id,omitempty"`
+}
+
+// VaultMount describes a single KV mount within a Vault source.
+type VaultMount struct {
+	Path    string `yaml:"path"`
+	Version int    `yaml:"version,omitempty"`
+}
+
 // Config holds the application configuration
 type Config struct {
-	ProjectID        string          `yaml:"project_id"`
-	FolderSeparator  string          `yaml:"folder_separator"`
-	Templates        []Template      `yaml:"templates"`
-	RecentProjects   []string        `yaml:"recent_projects"`
-	SecretLocations  []string        `yaml:"secret_locations,omitempty"`
-	Clipboard        ClipboardConfig `yaml:"clipboard"`
-	Audit            AuditConfig     `yaml:"audit"`
-	Session          SessionConfig   `yaml:"session"`
+	DefaultSource string         `yaml:"default_source,omitempty"`
+	Sources       []SourceConfig `yaml:"sources,omitempty"`
+
+	Clipboard ClipboardConfig `yaml:"clipboard"`
+	Audit     AuditConfig     `yaml:"audit"`
+	Session   SessionConfig   `yaml:"session"`
+	Templates []Template      `yaml:"templates,omitempty"`
+
+	// Legacy (deprecated, auto-migrated by MigrateLegacy in Task 8). Kept until v2.
+	ProjectID       string   `yaml:"project_id,omitempty"`
+	RecentProjects  []string `yaml:"recent_projects,omitempty"`
+	SecretLocations []string `yaml:"secret_locations,omitempty"`
+	FolderSeparator string   `yaml:"folder_separator,omitempty"`
 }
 
 // DefaultConfig returns a config with sensible defaults
