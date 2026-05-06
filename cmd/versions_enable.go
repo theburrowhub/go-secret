@@ -2,11 +2,11 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/spf13/cobra"
-	"github.com/theburrowhub/go-secret/internal/config"
-	"github.com/theburrowhub/go-secret/internal/providers/gsm"
+	"github.com/theburrowhub/go-secret/internal/sources"
 )
 
 var versionsEnableCmd = &cobra.Command{
@@ -33,30 +33,22 @@ func init() {
 func runVersionsEnable(secretName, version string) error {
 	ctx := context.Background()
 
-	// Cargar configuración
-	cfg, err := config.Load()
+	_, reg, uc, err := loadRegistry(ctx)
 	if err != nil {
-		return fmt.Errorf("error cargando configuración: %w", err)
+		return err
 	}
+	defer func() { _ = reg.Close() }()
 
-	// Determinar el proyecto a usar
-	proj := projectID
-	if proj == "" {
-		proj = cfg.ProjectID
-	}
-	if proj == "" {
-		return fmt.Errorf("no se especificó project ID. Usa --project o configura un proyecto por defecto")
-	}
-
-	// Crear cliente GCP
-	client, err := gsm.NewClient(ctx, proj)
+	p, err := uc.Resolve(ctx, secretName, sourceID)
 	if err != nil {
-		return fmt.Errorf("error creando cliente GCP: %w", err)
+		if errors.Is(err, sources.ErrAmbiguousSecret) {
+			return fmt.Errorf("%w. Use --source <id>", err)
+		}
+		return err
 	}
-	defer func() { _ = client.Close() }()
 
 	// Habilitar la versión
-	if err := client.EnableSecretVersion(ctx, secretName, version); err != nil {
+	if err := p.EnableVersion(ctx, secretName, version); err != nil {
 		return fmt.Errorf("error habilitando versión: %w", err)
 	}
 
