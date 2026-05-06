@@ -1380,7 +1380,7 @@ func (m Model) updateGenerate(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.templateCursor--
 		}
 	case "down", "j":
-		if m.templateCursor < len(m.config.Templates)-1 {
+		if m.templateCursor < len(m.resolvedTemplates())-1 {
 			m.templateCursor++
 		}
 	case "enter":
@@ -2140,34 +2140,85 @@ func (m *Model) updateDisplayItems() {
 	m.listOffset = 0
 }
 
+// resolvedTemplates returns the merged template list for the currently selected secret's source.
+// Per-source templates take precedence over global ones with the same Title.
+func (m Model) resolvedTemplates() []config.Template {
+	sourceID := ""
+	if m.selectedSecret != nil {
+		sourceID = m.selectedSecret.SourceID
+	}
+	sourceTemplates := []config.Template{}
+	for _, s := range m.config.Sources {
+		if s.ID == sourceID {
+			sourceTemplates = s.Templates
+			break
+		}
+	}
+	templates := append([]config.Template{}, sourceTemplates...)
+	seen := map[string]bool{}
+	for _, t := range sourceTemplates {
+		seen[t.Title] = true
+	}
+	for _, t := range m.config.Templates {
+		if !seen[t.Title] {
+			templates = append(templates, t)
+		}
+	}
+	return templates
+}
+
 // generateCode generates code from a template
 func (m Model) generateCode(templateIdx int) string {
-	if templateIdx >= len(m.config.Templates) || m.selectedSecret == nil {
+	if m.selectedSecret == nil {
 		return ""
 	}
-	
-	tpl := m.config.Templates[templateIdx]
-	
-	// Extract just the secret name (last part)
-	parts := strings.Split(m.selectedSecret.Name, m.config.FolderSeparator)
+
+	templates := m.resolvedTemplates()
+	if templateIdx >= len(templates) {
+		return ""
+	}
+
+	tpl := templates[templateIdx]
+
+	sourceID := m.selectedSecret.SourceID
+
+	p, err := m.registry.Get(sourceID)
+	if err != nil {
+		return fmt.Sprintf("Error: %v", err)
+	}
+	sep := p.FolderSeparator()
+
+	// Extract just the secret name (last part after folder separator)
+	parts := strings.Split(m.selectedSecret.Name, sep)
 	shortName := parts[len(parts)-1]
-	
+
+	// Determine ProjectID: only populated for GSM sources
+	projectIDVal := ""
+	for _, s := range m.config.Sources {
+		if s.ID == sourceID {
+			projectIDVal = s.ProjectID
+			break
+		}
+	}
+
 	data := map[string]string{
 		"SecretName":     shortName,
 		"FullSecretName": m.selectedSecret.Name,
-		"ProjectID":      m.config.ProjectID,
+		"ProjectID":      projectIDVal,
+		"SourceID":       sourceID,
+		"Provider":       p.Kind(),
 	}
-	
+
 	t, err := template.New("code").Parse(tpl.Code)
 	if err != nil {
 		return fmt.Sprintf("Template error: %v", err)
 	}
-	
+
 	var buf bytes.Buffer
 	if err := t.Execute(&buf, data); err != nil {
 		return fmt.Sprintf("Execution error: %v", err)
 	}
-	
+
 	return buf.String()
 }
 
@@ -2656,7 +2707,7 @@ func (m Model) viewGenerate() string {
 	b.WriteString(m.styles.InputLabel.Render("Select Template:"))
 	b.WriteString("\n\n")
 	
-	for i, tpl := range m.config.Templates {
+	for i, tpl := range m.resolvedTemplates() {
 		line := tpl.Title
 		if i == m.templateCursor {
 			line = m.styles.ListSelected.Width(40).Render("▶ " + line)

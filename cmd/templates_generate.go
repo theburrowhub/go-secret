@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/theburrowhub/go-secret/internal/clipboard"
+	"github.com/theburrowhub/go-secret/internal/config"
 	"github.com/theburrowhub/go-secret/internal/sources"
 )
 
@@ -30,7 +31,9 @@ Usa 'go-secret templates list' para ver los índices de las plantillas.
 Las variables disponibles son:
   {{.SecretName}}     - Nombre del secreto
   {{.FullSecretName}} - Nombre completo del secreto
-  {{.ProjectID}}      - ID del proyecto GCP (o source ID para otros backends)
+  {{.ProjectID}}      - ID del proyecto GCP (vacío para otros backends)
+  {{.SourceID}}       - ID de la fuente del secreto
+  {{.Provider}}       - Tipo de backend ("gsm", "vault", etc.)
 
 Ejemplos:
   go-secret generate database-password
@@ -57,15 +60,6 @@ func runTemplatesGenerate(secretName string) error {
 	}
 	defer func() { _ = reg.Close() }()
 
-	// Validar índice
-	if templateGenerateIndex < 1 || templateGenerateIndex > len(cfg.Templates) {
-		return fmt.Errorf("índice fuera de rango: %d (debe estar entre 1 y %d)", templateGenerateIndex, len(cfg.Templates))
-	}
-
-	// Obtener plantilla
-	idx := templateGenerateIndex - 1
-	tmpl := cfg.Templates[idx]
-
 	p, err := uc.Resolve(ctx, secretName, sourceID)
 	if err != nil {
 		if errors.Is(err, sources.ErrAmbiguousSecret) {
@@ -74,11 +68,40 @@ func runTemplatesGenerate(secretName string) error {
 		return err
 	}
 
-	// Determine ProjectID: look up source config by p.ID() to find ProjectID field.
-	// Falls back to p.ID() for non-GSM backends.
-	projectIDVal := p.ID()
+	chosenSource := p.ID()
+
+	// Build merged template list: per-source templates first, then global ones
+	// (global templates with same Title as a per-source one are skipped).
+	sourceTemplates := []config.Template{}
+	for _, s := range cfg.Sources {
+		if s.ID == chosenSource {
+			sourceTemplates = s.Templates
+			break
+		}
+	}
+	templates := append([]config.Template{}, sourceTemplates...)
+	seen := map[string]bool{}
+	for _, t := range sourceTemplates {
+		seen[t.Title] = true
+	}
+	for _, t := range cfg.Templates {
+		if !seen[t.Title] {
+			templates = append(templates, t)
+		}
+	}
+
+	// Validar índice
+	if templateGenerateIndex < 1 || templateGenerateIndex > len(templates) {
+		return fmt.Errorf("índice fuera de rango: %d (debe estar entre 1 y %d)", templateGenerateIndex, len(templates))
+	}
+
+	// Obtener plantilla
+	tmpl := templates[templateGenerateIndex-1]
+
+	// Determine ProjectID from source config (only populated for GSM sources).
+	projectIDVal := ""
 	for _, sc := range cfg.Sources {
-		if sc.ID == p.ID() && sc.ProjectID != "" {
+		if sc.ID == chosenSource && sc.Provider == "gsm" {
 			projectIDVal = sc.ProjectID
 			break
 		}
@@ -89,10 +112,14 @@ func runTemplatesGenerate(secretName string) error {
 		SecretName     string
 		FullSecretName string
 		ProjectID      string
+		SourceID       string
+		Provider       string
 	}{
-		SecretName:     extractSecretName(secretName, cfg.FolderSeparator),
+		SecretName:     extractSecretName(secretName, p.FolderSeparator()),
 		FullSecretName: secretName,
 		ProjectID:      projectIDVal,
+		SourceID:       chosenSource,
+		Provider:       p.Kind(),
 	}
 
 	// Parsear y ejecutar plantilla
