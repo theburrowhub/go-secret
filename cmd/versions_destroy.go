@@ -3,13 +3,13 @@ package cmd
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
-	"github.com/theburrowhub/go-secret/internal/config"
-	"github.com/theburrowhub/go-secret/internal/providers/gsm"
+	"github.com/theburrowhub/go-secret/internal/sources"
 )
 
 var versionsDestroyForce bool
@@ -42,22 +42,7 @@ func init() {
 func runVersionsDestroy(secretName, version string) error {
 	ctx := context.Background()
 
-	// Cargar configuración
-	cfg, err := config.Load()
-	if err != nil {
-		return fmt.Errorf("error cargando configuración: %w", err)
-	}
-
-	// Determinar el proyecto a usar
-	proj := projectID
-	if proj == "" {
-		proj = cfg.ProjectID
-	}
-	if proj == "" {
-		return fmt.Errorf("no se especificó project ID. Usa --project o configura un proyecto por defecto")
-	}
-
-	// Confirmar destrucción si no se usa --force
+	// Confirmar destrucción si no se usa --force (before loading registry for UX)
 	if !versionsDestroyForce {
 		fmt.Printf("⚠️  Estás a punto de destruir la versión %s del secreto: %s\n", version, secretName)
 		fmt.Println("Esta acción NO SE PUEDE DESHACER. La versión será destruida permanentemente.")
@@ -76,15 +61,22 @@ func runVersionsDestroy(secretName, version string) error {
 		}
 	}
 
-	// Crear cliente GCP
-	client, err := gsm.NewClient(ctx, proj)
+	_, reg, uc, err := loadRegistry(ctx)
 	if err != nil {
-		return fmt.Errorf("error creando cliente GCP: %w", err)
+		return err
 	}
-	defer func() { _ = client.Close() }()
+	defer func() { _ = reg.Close() }()
+
+	p, err := uc.Resolve(ctx, secretName, sourceID)
+	if err != nil {
+		if errors.Is(err, sources.ErrAmbiguousSecret) {
+			return fmt.Errorf("%w. Use --source <id>", err)
+		}
+		return err
+	}
 
 	// Destruir la versión
-	if err := client.DestroySecretVersion(ctx, secretName, version); err != nil {
+	if err := p.DestroyVersion(ctx, secretName, version); err != nil {
 		return fmt.Errorf("error destruyendo versión: %w", err)
 	}
 
