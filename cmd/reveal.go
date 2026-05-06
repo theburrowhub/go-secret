@@ -72,6 +72,7 @@ func runReveal(secretName string) error {
 			if auditLogger != nil {
 				defer func() { _ = auditLogger.Close() }()
 				auditLogger.SetUser(p.UserEmail())
+				auditLogger.SetSource(p.ID(), p.Kind())
 				auditLogger.LogSecretReveal(p.ID(), secretName, revealVersion, audit.ResultFailure, err.Error())
 			}
 		}
@@ -90,6 +91,7 @@ func runReveal(secretName string) error {
 		if err == nil {
 			defer func() { _ = auditLogger.Close() }()
 			auditLogger.SetUser(p.UserEmail())
+			auditLogger.SetSource(p.ID(), p.Kind())
 			auditLogger.LogSecretReveal(p.ID(), secretName, revealVersion, audit.ResultSuccess, "")
 		}
 	}

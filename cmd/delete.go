@@ -93,6 +93,7 @@ func runDelete(secretName string) error {
 			if auditLogger != nil {
 				defer func() { _ = auditLogger.Close() }()
 				auditLogger.SetUser(p.UserEmail())
+				auditLogger.SetSource(p.ID(), p.Kind())
 				auditLogger.LogSecretDelete(p.ID(), secretName, audit.ResultFailure, err.Error())
 			}
 		}
@@ -111,6 +112,7 @@ func runDelete(secretName string) error {
 		if err == nil {
 			defer func() { _ = auditLogger.Close() }()
 			auditLogger.SetUser(p.UserEmail())
+			auditLogger.SetSource(p.ID(), p.Kind())
 			auditLogger.LogSecretDelete(p.ID(), secretName, audit.ResultSuccess, "")
 		}
 	}

@@ -85,6 +85,7 @@ func runGet(secretName string) error {
 		if err == nil {
 			defer func() { _ = auditLogger.Close() }()
 			auditLogger.SetUser(p.UserEmail())
+			auditLogger.SetSource(p.ID(), p.Kind())
 			auditLogger.LogSecretAccess(p.ID(), secretName, "", audit.ResultSuccess, "")
 		}
 	}

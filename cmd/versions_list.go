@@ -72,6 +72,7 @@ func runVersionsList(secretName string) error {
 		if err == nil {
 			defer func() { _ = auditLogger.Close() }()
 			auditLogger.SetUser(p.UserEmail())
+			auditLogger.SetSource(p.ID(), p.Kind())
 			_ = auditLogger.Log(audit.Event{
 				EventType:  audit.EventVersionList,
 				Result:     audit.ResultSuccess,

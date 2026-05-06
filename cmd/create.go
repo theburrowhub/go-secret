@@ -148,6 +148,7 @@ func runCreate(secretName string) error {
 			if auditLogger != nil {
 				defer func() { _ = auditLogger.Close() }()
 				auditLogger.SetUser(p.UserEmail())
+				auditLogger.SetSource(p.ID(), p.Kind())
 				auditLogger.LogSecretCreate(target, secretName, audit.ResultFailure, createErr.Error())
 			}
 		}
@@ -168,6 +169,7 @@ func runCreate(secretName string) error {
 			if auditLogger != nil {
 				defer func() { _ = auditLogger.Close() }()
 				auditLogger.SetUser(p.UserEmail())
+				auditLogger.SetSource(p.ID(), p.Kind())
 				auditLogger.LogVersionAdd(target, secretName, "", audit.ResultFailure, versionErr.Error())
 			}
 		}
@@ -192,6 +194,7 @@ func runCreate(secretName string) error {
 		if err == nil {
 			defer func() { _ = auditLogger.Close() }()
 			auditLogger.SetUser(p.UserEmail())
+			auditLogger.SetSource(p.ID(), p.Kind())
 			auditLogger.LogSecretCreate(target, secretName, audit.ResultSuccess, "")
 			auditLogger.LogVersionAdd(target, secretName, version.Name, audit.ResultSuccess, "")
 		}

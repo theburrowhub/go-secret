@@ -37,6 +37,13 @@ const (
 
 	// Security events
 	EventClipboardClear EventType = "CLIPBOARD_CLEAR"
+
+	// Source lifecycle events
+	EventSourceAdd         EventType = "SOURCE_ADD"
+	EventSourceRemove      EventType = "SOURCE_REMOVE"
+	EventSourceToggle      EventType = "SOURCE_TOGGLE"
+	EventSourceLogin       EventType = "SOURCE_LOGIN"
+	EventSourceAuthRefresh EventType = "SOURCE_AUTH_REFRESH"
 )
 
 // EventResult represents the result of an operation
@@ -58,17 +65,21 @@ type Event struct {
 	Version    string            `json:"version,omitempty"`
 	Details    map[string]string `json:"details,omitempty"`
 	Error      string            `json:"error,omitempty"`
+	SourceID   string            `json:"source_id,omitempty"`
+	Provider   string            `json:"provider,omitempty"`
 }
 
 // Logger handles audit logging operations
 type Logger struct {
-	mu         sync.Mutex
-	file       *os.File
-	enabled    bool
-	filePath   string
-	maxSizeMB  int
-	maxAgeDays int
-	userEmail  string
+	mu           sync.Mutex
+	file         *os.File
+	enabled      bool
+	filePath     string
+	maxSizeMB    int
+	maxAgeDays   int
+	userEmail    string
+	sourceID     string
+	providerKind string
 }
 
 // Config holds audit logger configuration
@@ -186,6 +197,14 @@ func (l *Logger) Log(event Event) error {
 	// Set user if not provided and we have one stored
 	if event.User == "" && l.userEmail != "" {
 		event.User = l.userEmail
+	}
+
+	// Set source metadata if not provided and we have it stored
+	if event.SourceID == "" && l.sourceID != "" {
+		event.SourceID = l.sourceID
+	}
+	if event.Provider == "" && l.providerKind != "" {
+		event.Provider = l.providerKind
 	}
 
 	// Serialize event to JSON
@@ -364,6 +383,66 @@ func (l *Logger) LogSessionUnlock(projectID string) {
 	})
 }
 
+// LogSourceAdd logs a source addition event.
+func (l *Logger) LogSourceAdd(sourceID, providerKind string, result EventResult, errMsg string) {
+	_ = l.Log(Event{
+		EventType: EventSourceAdd,
+		Result:    result,
+		SourceID:  sourceID,
+		Provider:  providerKind,
+		Error:     errMsg,
+	})
+}
+
+// LogSourceRemove logs a source removal event.
+func (l *Logger) LogSourceRemove(sourceID, providerKind string, result EventResult, errMsg string) {
+	_ = l.Log(Event{
+		EventType: EventSourceRemove,
+		Result:    result,
+		SourceID:  sourceID,
+		Provider:  providerKind,
+		Error:     errMsg,
+	})
+}
+
+// LogSourceToggle logs a source enable/disable toggle event.
+func (l *Logger) LogSourceToggle(sourceID, providerKind string, enabled bool, result EventResult, errMsg string) {
+	state := "enabled"
+	if !enabled {
+		state = "disabled"
+	}
+	_ = l.Log(Event{
+		EventType: EventSourceToggle,
+		Result:    result,
+		SourceID:  sourceID,
+		Provider:  providerKind,
+		Details:   map[string]string{"state": state},
+		Error:     errMsg,
+	})
+}
+
+// LogSourceLogin logs a source authentication / login event.
+func (l *Logger) LogSourceLogin(sourceID, providerKind string, result EventResult, errMsg string) {
+	_ = l.Log(Event{
+		EventType: EventSourceLogin,
+		Result:    result,
+		SourceID:  sourceID,
+		Provider:  providerKind,
+		Error:     errMsg,
+	})
+}
+
+// LogSourceAuthRefresh logs a source token/credential refresh event.
+func (l *Logger) LogSourceAuthRefresh(sourceID, providerKind string, result EventResult, errMsg string) {
+	_ = l.Log(Event{
+		EventType: EventSourceAuthRefresh,
+		Result:    result,
+		SourceID:  sourceID,
+		Provider:  providerKind,
+		Error:     errMsg,
+	})
+}
+
 // rotateIfNeeded checks if log rotation is needed and performs it
 func (l *Logger) rotateIfNeeded() error {
 	if l.file == nil {
@@ -468,6 +547,15 @@ func (l *Logger) SetUser(userEmail string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.userEmail = userEmail
+}
+
+// SetSource records the source ID and provider kind that subsequent events
+// should be tagged with.
+func (l *Logger) SetSource(id, providerKind string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.sourceID = id
+	l.providerKind = providerKind
 }
 
 // GetUser returns the current user email

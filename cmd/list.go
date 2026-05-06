@@ -50,14 +50,16 @@ func runList() error {
 	defer func() { _ = reg.Close() }()
 
 	var (
-		secrets []sources.Secret
-		listErr error
+		secrets  []sources.Secret
+		listErr  error
+		listProv sources.Provider
 	)
 	if sourceID != "" {
 		p, err := reg.Get(sourceID)
 		if err != nil {
 			return err
 		}
+		listProv = p
 		secrets, listErr = p.List(ctx)
 	} else {
 		secrets, listErr = uc.List(ctx)
@@ -71,7 +73,7 @@ func runList() error {
 		}
 	}
 
-	// audit logging adapted in Task 29
+	// audit logging
 	if cfg.Audit.Enabled {
 		auditCfg := audit.Config{
 			Enabled:    cfg.Audit.Enabled,
@@ -81,7 +83,10 @@ func runList() error {
 		}
 		if auditLogger, auditErr := audit.NewLogger(auditCfg); auditErr == nil {
 			defer func() { _ = auditLogger.Close() }()
-			// source-specific user email wiring is handled in Task 29
+			if listProv != nil {
+				auditLogger.SetUser(listProv.UserEmail())
+				auditLogger.SetSource(listProv.ID(), listProv.Kind())
+			}
 			auditLogger.LogSecretList(sourceID, len(secrets), audit.ResultSuccess, "")
 		}
 	}
