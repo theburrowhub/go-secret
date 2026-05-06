@@ -17,6 +17,7 @@ import (
 	"github.com/theburrowhub/go-secret/internal/audit"
 	"github.com/theburrowhub/go-secret/internal/clipboard"
 	"github.com/theburrowhub/go-secret/internal/config"
+	"github.com/theburrowhub/go-secret/internal/providers/vault"
 	"github.com/theburrowhub/go-secret/internal/sources"
 )
 
@@ -45,6 +46,9 @@ const (
 	ViewLocked
 	ViewSourcesPicker
 	ViewCreateSourcePicker
+	ViewSourcesEditor
+	ViewSourceForm
+	ViewSourceLoginPrompt
 )
 
 // FolderItem represents either a folder or a secret in the tree view
@@ -55,6 +59,18 @@ type FolderItem struct {
 	Secret     *sources.Secret
 	Children   map[string]*FolderItem
 	Depth      int
+}
+
+// sourceFormState holds form state for add/edit source.
+type sourceFormState struct {
+	mode            string // "add" | "edit"
+	originalID      string // for edit: which entry to replace
+	sc              config.SourceConfig
+	cursor          int // current field index
+	editingMount    int // -1 = not editing a mount; >=0 = mount index
+	editingSubfield int // 0 = path, 1 = version
+	errMsg          string
+	inputs          []textinput.Model // per-field text inputs
 }
 
 // Model is the main application model
@@ -96,6 +112,12 @@ type Model struct {
 
 	// Sources picker state (Task 26)
 	sourcesPickerCursor int
+
+	// Sources editor state
+	sourcesEditorCursor int
+	sourceForm          sourceFormState
+	sourceLoginInput    textinput.Model
+	sourceLoginSourceID string // source being logged-in to
 
 	// Create source picker state (Task 27)
 	createSourceID     string
@@ -298,6 +320,12 @@ func NewModel(cfg *config.Config, projectID string) Model {
 	projectSwitchInput := textinput.New()
 	projectSwitchInput.Placeholder = "Enter project ID or select from list..."
 	projectSwitchInput.CharLimit = 100
+
+	// Source login input (for approle secret_id prompt)
+	sourceLoginInput := textinput.New()
+	sourceLoginInput.Placeholder = "secret_id"
+	sourceLoginInput.CharLimit = 256
+	sourceLoginInput.EchoMode = textinput.EchoPassword
 	
 	// Determine initial view - with sources we always start in ViewList (or prompt)
 	initialView := ViewList
@@ -332,6 +360,7 @@ func NewModel(cfg *config.Config, projectID string) Model {
 		templateCodeArea:   templateCodeArea,
 		configMenuItems:    configMenuItems,
 		projectSwitchInput: projectSwitchInput,
+		sourceLoginInput:   sourceLoginInput,
 		folderTree:         &FolderItem{Children: make(map[string]*FolderItem)},
 		currentPath:        []string{},
 		loading:            true,
@@ -620,6 +649,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateSourcesPicker(msg)
 		case ViewCreateSourcePicker:
 			return m.updateCreateSourcePicker(msg)
+		case ViewSourcesEditor:
+			return m.updateSourcesEditor(msg)
+		case ViewSourceForm:
+			return m.updateSourceForm(msg)
+		case ViewSourceLoginPrompt:
+			return m.updateSourceLoginPrompt(msg)
 		}
 		
 	case tea.WindowSizeMsg:
@@ -1439,9 +1474,9 @@ func (m Model) updateConfigMenu(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case 3: // Security Settings
 			m.view = ViewConfigSecurity
 			m.securityCursor = 0
-		case 4: // Sources (Task 28)
-			m.view = ViewSourcesPicker
-			m.sourcesPickerCursor = 0
+		case 4: // Sources — full editor (Ctrl+P = quick picker, Settings = full editor)
+			m.view = ViewSourcesEditor
+			m.sourcesEditorCursor = 0
 			return m, nil
 		case 5: // Save & Exit
 			_ = m.config.Save()
@@ -2292,6 +2327,15 @@ func (m Model) View() string {
 	case ViewCreateSourcePicker:
 		content = m.viewCreateSourcePicker()
 		footer = SourcesPickerBindings()
+	case ViewSourcesEditor:
+		content = m.viewSourcesEditor()
+		footer = SourcesEditorBindings()
+	case ViewSourceForm:
+		content = m.viewSourceForm()
+		footer = SourceFormBindings()
+	case ViewSourceLoginPrompt:
+		content = m.viewSourceLoginPrompt()
+		footer = SourceLoginBindings()
 	}
 
 	return m.renderLayout(content, footer)
@@ -3444,6 +3488,870 @@ func (m Model) viewCreateSourcePicker() string {
 
 	b.WriteString("\n")
 	b.WriteString(m.styles.SubtleText().Render("Enter to select  •  Esc to cancel"))
+
+	return m.styles.Dialog.Render(b.String())
+}
+
+// ── Sources Editor ────────────────────────────────────────────────────────────
+
+// updateSourcesEditor handles keys in the full sources editor view.
+func (m Model) updateSourcesEditor(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	all := m.config.Sources
+
+	switch msg.String() {
+	case "up", "k":
+		if m.sourcesEditorCursor > 0 {
+			m.sourcesEditorCursor--
+		}
+	case "down", "j":
+		if m.sourcesEditorCursor < len(all)-1 {
+			m.sourcesEditorCursor++
+		}
+	case "n":
+		// New source — open empty form in add mode
+		m.sourceForm = m.initSourceForm("add", config.SourceConfig{
+			Provider:        "gsm",
+			Enabled:         true,
+			FolderSeparator: "/",
+			Mounts:          []config.VaultMount{{Path: "secret", Version: 2}},
+		})
+		m.view = ViewSourceForm
+		return m, textinput.Blink
+	case "e", "enter":
+		if len(all) > 0 && m.sourcesEditorCursor < len(all) {
+			sc := all[m.sourcesEditorCursor]
+			m.sourceForm = m.initSourceForm("edit", sc)
+			m.view = ViewSourceForm
+			return m, textinput.Blink
+		}
+	case "d":
+		if len(all) > 0 && m.sourcesEditorCursor < len(all) {
+			// Remove the source
+			sc := all[m.sourcesEditorCursor]
+			m.config.Sources = append(
+				m.config.Sources[:m.sourcesEditorCursor],
+				m.config.Sources[m.sourcesEditorCursor+1:]...,
+			)
+			if m.sourcesEditorCursor >= len(m.config.Sources) && m.sourcesEditorCursor > 0 {
+				m.sourcesEditorCursor--
+			}
+			_ = m.config.Save()
+			m.statusMsg = fmt.Sprintf("Source %q deleted", sc.ID)
+			m.statusErr = false
+			// Reload registry
+			return m, m.reloadRegistryCmd()
+		}
+	case "t":
+		// Toggle enabled
+		if len(all) > 0 && m.sourcesEditorCursor < len(all) {
+			m.config.Sources[m.sourcesEditorCursor].Enabled = !m.config.Sources[m.sourcesEditorCursor].Enabled
+			_ = m.config.Save()
+			// Sync registry runtime state
+			if m.registry != nil {
+				_ = m.registry.SetEnabled(m.config.Sources[m.sourcesEditorCursor].ID, m.config.Sources[m.sourcesEditorCursor].Enabled)
+			}
+			m.refreshSecretsView()
+			m.buildFolderTree()
+			m.updateDisplayItems()
+			if m.config.Sources[m.sourcesEditorCursor].Enabled {
+				m.statusMsg = fmt.Sprintf("Source %q enabled", m.config.Sources[m.sourcesEditorCursor].ID)
+			} else {
+				m.statusMsg = fmt.Sprintf("Source %q disabled", m.config.Sources[m.sourcesEditorCursor].ID)
+			}
+			m.statusErr = false
+		}
+	case "l":
+		// Login — for vault sources only
+		if len(all) > 0 && m.sourcesEditorCursor < len(all) {
+			sc := all[m.sourcesEditorCursor]
+			if sc.Provider != "vault" {
+				m.statusMsg = "Login only available for vault sources"
+				m.statusErr = true
+				return m, nil
+			}
+			if sc.Auth.Method == "approle" {
+				// Need secret_id from user
+				m.sourceLoginSourceID = sc.ID
+				m.sourceLoginInput.SetValue("")
+				m.sourceLoginInput.Focus()
+				m.view = ViewSourceLoginPrompt
+				return m, textinput.Blink
+			}
+			// token or oidc: just call NewFromSourceConfig synchronously
+			ctx := context.Background()
+			_, err := vault.NewFromSourceConfig(ctx, sc)
+			if err != nil {
+				m.statusMsg = fmt.Sprintf("Login failed: %v", err)
+				m.statusErr = true
+			} else {
+				m.statusMsg = "Login successful"
+				m.statusErr = false
+			}
+		}
+	case "esc", "q":
+		m.view = ViewConfigMenu
+	}
+	return m, nil
+}
+
+// reloadRegistryCmd returns a command that re-initializes the registry from config.
+func (m Model) reloadRegistryCmd() tea.Cmd {
+	cfg := m.config
+	return func() tea.Msg {
+		ctx := context.Background()
+		reg, err := sources.LoadFromConfig(ctx, cfg)
+		if err != nil {
+			return registryInitializedMsg{err: err}
+		}
+		unified := sources.NewUnifiedClient(reg)
+		return registryInitializedMsg{registry: reg, unified: unified}
+	}
+}
+
+// viewSourcesEditor renders the full sources editor list.
+func (m Model) viewSourcesEditor() string {
+	var b strings.Builder
+
+	b.WriteString(m.styles.DialogTitle.Render("🔌 Sources Editor"))
+	b.WriteString("\n\n")
+
+	if len(m.config.Sources) == 0 {
+		b.WriteString(m.styles.SubtleText().Render("No sources configured. Press n to add one."))
+		b.WriteString("\n")
+		return m.styles.Dialog.Render(b.String())
+	}
+
+	// Column header
+	header := fmt.Sprintf("%-20s %-7s %-8s %-8s %s",
+		"ID", "PROV", "ENABLED", "DEFAULT", "DETAIL")
+	b.WriteString(m.styles.InputLabel.Render(header))
+	b.WriteString("\n")
+	b.WriteString(m.styles.SubtleText().Render(strings.Repeat("─", 65)))
+	b.WriteString("\n")
+
+	for i, sc := range m.config.Sources {
+		// Enabled indicator
+		enabledIcon := "✗"
+		enabledStyle := m.styles.StatusError
+		if sc.Enabled {
+			enabledIcon = "✓"
+			enabledStyle = m.styles.StatusSuccess
+		}
+
+		// Default indicator
+		defIcon := " "
+		if m.config.DefaultSource == sc.ID {
+			defIcon = "*"
+		}
+
+		// Provider badge
+		provBadge := m.styles.ProviderBadge(sc.Provider).Render(sc.Provider)
+
+		// Detail column
+		detail := ""
+		switch sc.Provider {
+		case "gsm":
+			detail = sc.ProjectID
+		case "vault":
+			detail = sc.Address
+		}
+		if len(detail) > 30 {
+			detail = detail[:27] + "..."
+		}
+
+		// Build row
+		idPart := sc.ID
+		if len(idPart) > 18 {
+			idPart = idPart[:15] + "..."
+		}
+		provPart := fmt.Sprintf("%-7s", "")
+		_ = provPart
+		enabledPart := enabledStyle.Render(fmt.Sprintf("%-8s", enabledIcon))
+		defPart := fmt.Sprintf("%-8s", defIcon)
+
+		// We compose with lipgloss to handle color escapes
+		row := idPart + " " + provBadge + " " + enabledPart + defPart + detail
+
+		if i == m.sourcesEditorCursor {
+			row = m.styles.ListSelected.Width(65).Render("▶ " + row)
+		} else {
+			row = m.styles.ListItem.Width(65).Render("  " + row)
+		}
+		b.WriteString(row)
+		b.WriteString("\n")
+	}
+
+	b.WriteString("\n")
+	b.WriteString(m.styles.SubtleText().Render("n add  e/Enter edit  d delete  t toggle  l login  Esc back"))
+
+	return m.styles.Dialog.Render(b.String())
+}
+
+// ── Source Form ───────────────────────────────────────────────────────────────
+
+// sourceFormFieldCount returns the number of visible fields for the current provider.
+// initSourceForm creates a sourceFormState for add or edit mode.
+func (m Model) initSourceForm(mode string, sc config.SourceConfig) sourceFormState {
+	if sc.FolderSeparator == "" {
+		sc.FolderSeparator = "/"
+	}
+	if sc.Auth.Method == "" && sc.Provider == "vault" {
+		sc.Auth.Method = "token"
+	}
+	if sc.Auth.OIDCPort == 0 && sc.Provider == "vault" {
+		sc.Auth.OIDCPort = 8250
+	}
+
+	// Build text inputs for the common + provider-specific text fields
+	inputs := buildSourceFormInputs(sc, mode)
+
+	return sourceFormState{
+		mode:         mode,
+		originalID:   sc.ID,
+		sc:           sc,
+		cursor:       0,
+		editingMount: -1,
+		inputs:       inputs,
+	}
+}
+
+// buildSourceFormInputs creates a fresh slice of text inputs for the source form fields.
+func buildSourceFormInputs(sc config.SourceConfig, mode string) []textinput.Model {
+	newInput := func(placeholder, val string, limit int) textinput.Model {
+		ti := textinput.New()
+		ti.Placeholder = placeholder
+		ti.CharLimit = limit
+		ti.SetValue(val)
+		return ti
+	}
+
+	sep := sc.FolderSeparator
+	if sep == "" {
+		sep = "/"
+	}
+	locStr := strings.Join(sc.SecretLocations, ",")
+
+	inputs := []textinput.Model{
+		// 0: ID
+		newInput("source-id", sc.ID, 50),
+		// 1: Provider (cycle, rendered as selector — use textinput for consistency but readonly)
+		newInput("gsm|vault", sc.Provider, 10),
+		// 2: DisplayName
+		newInput("My Vault", sc.DisplayName, 100),
+		// 3: FolderSeparator
+		newInput("/", sep, 5),
+		// 4: Enabled placeholder (toggle, not a text input — keep as marker)
+		newInput("", "", 1),
+	}
+
+	switch sc.Provider {
+	case "gsm":
+		inputs = append(inputs,
+			// 5: ProjectID
+			newInput("my-gcp-project", sc.ProjectID, 100),
+			// 6: SecretLocations
+			newInput("europe-west1,us-central1", locStr, 500),
+		)
+	case "vault":
+		roleStr := sc.Auth.Role
+		roleIDStr := sc.Auth.AppRoleRoleID
+		portStr := ""
+		if sc.Auth.OIDCPort > 0 {
+			portStr = fmt.Sprintf("%d", sc.Auth.OIDCPort)
+		}
+
+		inputs = append(inputs,
+			// 5: Address
+			newInput("https://vault.example.com:8200", sc.Address, 200),
+			// 6: AuthMethod (cycle)
+			newInput("token|approle|oidc", sc.Auth.Method, 10),
+		)
+		// 7: AuthRole (oidc or approle)
+		if sc.Auth.Method == "oidc" || sc.Auth.Method == "approle" {
+			inputs = append(inputs, newInput("my-role", roleStr, 100))
+		}
+		// 8: AuthRoleID (approle only)
+		if sc.Auth.Method == "approle" {
+			inputs = append(inputs, newInput("role-id-value", roleIDStr, 200))
+		}
+		// 9: OIDCPort (oidc only)
+		if sc.Auth.Method == "oidc" {
+			inputs = append(inputs, newInput("8250", portStr, 6))
+		}
+		// Mounts and Templates are rendered specially, no textinput for them
+	}
+
+	return inputs
+}
+
+// vaultFieldIndex returns the 0-based index in inputs[] for various vault fields.
+// base=5 always. After that depends on Auth.Method.
+func vaultFieldLabels(sc config.SourceConfig) []string {
+	labels := []string{"ID", "Provider", "Display Name", "Folder Sep", "Enabled"}
+	switch sc.Provider {
+	case "gsm":
+		labels = append(labels, "Project ID", "Secret Locations (comma-sep)")
+	case "vault":
+		labels = append(labels, "Address", "Auth Method")
+		if sc.Auth.Method == "oidc" || sc.Auth.Method == "approle" {
+			labels = append(labels, "Auth Role")
+		}
+		if sc.Auth.Method == "approle" {
+			labels = append(labels, "Auth Role ID")
+		}
+		if sc.Auth.Method == "oidc" {
+			labels = append(labels, "OIDC Port")
+		}
+		labels = append(labels, "Mounts", "Templates")
+	}
+	return labels
+}
+
+// mountsFieldIdx returns the index of the "Mounts" pseudo-field.
+// Returns -1 if not vault.
+func mountsFieldIdx(sc config.SourceConfig) int {
+	if sc.Provider != "vault" {
+		return -1
+	}
+	idx := 7 // after Address(5), AuthMethod(6)
+	if sc.Auth.Method == "oidc" || sc.Auth.Method == "approle" {
+		idx++ // role
+	}
+	if sc.Auth.Method == "approle" {
+		idx++ // role_id
+	}
+	if sc.Auth.Method == "oidc" {
+		idx++ // oidc_port
+	}
+	return idx
+}
+
+// templatesFieldIdx returns the index of the "Templates" pseudo-field.
+func templatesFieldIdx(sc config.SourceConfig) int {
+	m := mountsFieldIdx(sc)
+	if m < 0 {
+		return -1
+	}
+	return m + 1
+}
+
+// updateSourceForm handles key input for the source add/edit form.
+func (m Model) updateSourceForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	f := &m.sourceForm
+	labels := vaultFieldLabels(f.sc)
+	totalFields := len(labels)
+
+	// Determine if current field is a text input
+	isTextField := func(idx int) bool {
+		switch idx {
+		case 1: // Provider (cycle)
+			return false
+		case 4: // Enabled (toggle)
+			return false
+		}
+		mi := mountsFieldIdx(f.sc)
+		ti := templatesFieldIdx(f.sc)
+		if idx == mi || idx == ti {
+			return false
+		}
+		return idx < len(f.inputs)
+	}
+
+	// If editing a mount subfield, route input to the active mount input
+	if f.editingMount >= 0 && f.editingMount < len(f.sc.Mounts) {
+		switch msg.String() {
+		case "esc", "enter":
+			f.editingMount = -1
+			f.editingSubfield = 0
+		case "tab":
+			// cycle path <-> version subfield
+			f.editingSubfield = (f.editingSubfield + 1) % 2
+		case "left", "right":
+			if f.editingSubfield == 1 {
+				// cycle version 1 <-> 2
+				if f.sc.Mounts[f.editingMount].Version == 1 {
+					f.sc.Mounts[f.editingMount].Version = 2
+				} else {
+					f.sc.Mounts[f.editingMount].Version = 1
+				}
+			}
+		case "backspace":
+			if f.editingSubfield == 0 && len(f.sc.Mounts[f.editingMount].Path) > 0 {
+				p := f.sc.Mounts[f.editingMount].Path
+				f.sc.Mounts[f.editingMount].Path = p[:len(p)-1]
+			}
+		default:
+			if f.editingSubfield == 0 && len(msg.String()) == 1 {
+				f.sc.Mounts[f.editingMount].Path += msg.String()
+			}
+		}
+		m.sourceForm = *f
+		return m, nil
+	}
+
+	switch msg.String() {
+	case "ctrl+s":
+		return m.submitSourceForm()
+
+	case "esc":
+		m.view = ViewSourcesEditor
+		return m, nil
+
+	case "tab", "down":
+		// Focus next field
+		if isTextField(f.cursor) && f.cursor < len(f.inputs) {
+			f.inputs[f.cursor].Blur()
+		}
+		f.cursor = (f.cursor + 1) % totalFields
+		if isTextField(f.cursor) && f.cursor < len(f.inputs) {
+			f.inputs[f.cursor].Focus()
+		}
+		m.sourceForm = *f
+		return m, textinput.Blink
+
+	case "shift+tab", "up":
+		if isTextField(f.cursor) && f.cursor < len(f.inputs) {
+			f.inputs[f.cursor].Blur()
+		}
+		f.cursor--
+		if f.cursor < 0 {
+			f.cursor = totalFields - 1
+		}
+		if isTextField(f.cursor) && f.cursor < len(f.inputs) {
+			f.inputs[f.cursor].Focus()
+		}
+		m.sourceForm = *f
+		return m, textinput.Blink
+
+	case "enter", " ", "left", "right":
+		mi := mountsFieldIdx(f.sc)
+		ti := templatesFieldIdx(f.sc)
+
+		cursorMi := mi
+		cursorTi := ti
+
+		switch {
+		case f.cursor == 1: // Provider cycle
+			if f.mode == "add" {
+				switch f.sc.Provider {
+				case "gsm":
+					f.sc.Provider = "vault"
+					if f.sc.Auth.Method == "" {
+						f.sc.Auth.Method = "token"
+					}
+					if f.sc.Auth.OIDCPort == 0 {
+						f.sc.Auth.OIDCPort = 8250
+					}
+				default:
+					f.sc.Provider = "gsm"
+				}
+				f.inputs = buildSourceFormInputs(f.sc, f.mode)
+				f.cursor = 1
+			}
+		case f.cursor == 4: // Enabled toggle
+			f.sc.Enabled = !f.sc.Enabled
+		case f.cursor == cursorMi && cursorMi >= 0:
+			// Mounts field — enter sub-list for add/remove
+			switch msg.String() {
+			case "n", "+":
+				f.sc.Mounts = append(f.sc.Mounts, config.VaultMount{Path: "secret", Version: 2})
+			case "d", "backspace":
+				if len(f.sc.Mounts) > 0 {
+					f.sc.Mounts = f.sc.Mounts[:len(f.sc.Mounts)-1]
+				}
+			case "e", "enter":
+				if len(f.sc.Mounts) > 0 {
+					f.editingMount = 0
+					f.editingSubfield = 0
+				}
+			}
+		case f.cursor == cursorTi && cursorTi >= 0:
+			// Templates placeholder — show message
+			m.statusMsg = "Per-source template editing: coming in v2. Edit config.yaml directly for now."
+			m.statusErr = false
+		}
+
+		// Handle cycle for auth method
+		if f.cursor == 6 && f.sc.Provider == "vault" {
+			methods := []string{"token", "approle", "oidc"}
+			cur := 0
+			for i, method := range methods {
+				if method == f.sc.Auth.Method {
+					cur = i
+					break
+				}
+			}
+			if msg.String() == "left" {
+				cur = (cur - 1 + len(methods)) % len(methods)
+			} else {
+				cur = (cur + 1) % len(methods)
+			}
+			f.sc.Auth.Method = methods[cur]
+			f.inputs = buildSourceFormInputs(f.sc, f.mode)
+			f.cursor = 6
+		}
+
+		m.sourceForm = *f
+		return m, nil
+	}
+
+	// Delegate key to focused text input
+	if isTextField(f.cursor) && f.cursor < len(f.inputs) {
+		var cmd tea.Cmd
+		f.inputs[f.cursor], cmd = f.inputs[f.cursor].Update(msg)
+		m.sourceForm = *f
+		return m, cmd
+	}
+
+	m.sourceForm = *f
+	return m, nil
+}
+
+// submitSourceForm validates and saves the source form.
+func (m Model) submitSourceForm() (tea.Model, tea.Cmd) {
+	f := &m.sourceForm
+
+	// Sync input values back to sc
+	sc := &f.sc
+
+	// field 0: ID
+	if f.mode == "add" {
+		sc.ID = strings.TrimSpace(f.inputs[0].Value())
+	}
+	// field 2: DisplayName
+	sc.DisplayName = strings.TrimSpace(f.inputs[2].Value())
+	// field 3: FolderSeparator
+	sep := f.inputs[3].Value()
+	if sep == "" {
+		sep = "/"
+	}
+	sc.FolderSeparator = sep
+	// field 4: Enabled is already set by toggle
+
+	switch sc.Provider {
+	case "gsm":
+		sc.ProjectID = strings.TrimSpace(f.inputs[5].Value())
+		locRaw := strings.TrimSpace(f.inputs[6].Value())
+		if locRaw != "" {
+			parts := strings.Split(locRaw, ",")
+			locs := make([]string, 0, len(parts))
+			for _, p := range parts {
+				p = strings.TrimSpace(p)
+				if p != "" {
+					locs = append(locs, p)
+				}
+			}
+			sc.SecretLocations = locs
+		} else {
+			sc.SecretLocations = nil
+		}
+	case "vault":
+		sc.Address = strings.TrimSpace(f.inputs[5].Value())
+		// auth method already set via cycle
+
+		// Collect role/role_id/oidc_port from inputs
+		inpIdx := 7
+		if sc.Auth.Method == "oidc" || sc.Auth.Method == "approle" {
+			if inpIdx < len(f.inputs) {
+				sc.Auth.Role = strings.TrimSpace(f.inputs[inpIdx].Value())
+				inpIdx++
+			}
+		}
+		if sc.Auth.Method == "approle" {
+			if inpIdx < len(f.inputs) {
+				sc.Auth.AppRoleRoleID = strings.TrimSpace(f.inputs[inpIdx].Value())
+				inpIdx++
+			}
+		}
+		if sc.Auth.Method == "oidc" {
+			if inpIdx < len(f.inputs) {
+				portStr := strings.TrimSpace(f.inputs[inpIdx].Value())
+				port := 8250
+				if portStr != "" {
+					_, _ = fmt.Sscanf(portStr, "%d", &port)
+				}
+				sc.Auth.OIDCPort = port
+			}
+		}
+	}
+
+	// Validation
+	if sc.ID == "" {
+		f.errMsg = "ID is required"
+		m.sourceForm = *f
+		return m, nil
+	}
+	if sc.Provider != "gsm" && sc.Provider != "vault" {
+		f.errMsg = "Provider must be 'gsm' or 'vault'"
+		m.sourceForm = *f
+		return m, nil
+	}
+	if sc.Provider == "gsm" && sc.ProjectID == "" {
+		f.errMsg = "Project ID is required for GSM"
+		m.sourceForm = *f
+		return m, nil
+	}
+	if sc.Provider == "vault" {
+		if sc.Address == "" {
+			f.errMsg = "Address is required for Vault"
+			m.sourceForm = *f
+			return m, nil
+		}
+		if len(sc.Mounts) == 0 {
+			f.errMsg = "At least one mount is required for Vault"
+			m.sourceForm = *f
+			return m, nil
+		}
+	}
+
+	// Save to config
+	if f.mode == "add" {
+		// Check for duplicate ID
+		for _, existing := range m.config.Sources {
+			if existing.ID == sc.ID {
+				f.errMsg = fmt.Sprintf("Source with ID %q already exists", sc.ID)
+				m.sourceForm = *f
+				return m, nil
+			}
+		}
+		m.config.Sources = append(m.config.Sources, *sc)
+	} else {
+		// Replace existing
+		found := false
+		for i, existing := range m.config.Sources {
+			if existing.ID == f.originalID {
+				m.config.Sources[i] = *sc
+				found = true
+				break
+			}
+		}
+		if !found {
+			f.errMsg = fmt.Sprintf("Source %q not found in config", f.originalID)
+			m.sourceForm = *f
+			return m, nil
+		}
+	}
+
+	if err := m.config.Save(); err != nil {
+		f.errMsg = fmt.Sprintf("Save failed: %v", err)
+		m.sourceForm = *f
+		return m, nil
+	}
+
+	m.statusMsg = fmt.Sprintf("Source %q saved", sc.ID)
+	m.statusErr = false
+	m.view = ViewSourcesEditor
+
+	// Reload registry
+	return m, m.reloadRegistryCmd()
+}
+
+// viewSourceForm renders the source add/edit form.
+func (m Model) viewSourceForm() string {
+	f := &m.sourceForm
+	sc := f.sc
+	labels := vaultFieldLabels(sc)
+	mi := mountsFieldIdx(sc)
+	ti := templatesFieldIdx(sc)
+
+	var b strings.Builder
+
+	title := "🔌 Add Source"
+	if f.mode == "edit" {
+		title = fmt.Sprintf("🔌 Edit Source: %s", f.originalID)
+	}
+	b.WriteString(m.styles.DialogTitle.Render(title))
+	b.WriteString("\n\n")
+
+	isTextField := func(idx int) bool {
+		switch idx {
+		case 1: // Provider
+			return false
+		case 4: // Enabled
+			return false
+		}
+		if idx == mi || idx == ti {
+			return false
+		}
+		return idx < len(f.inputs)
+	}
+
+	for i, label := range labels {
+		focused := i == f.cursor
+		labelStr := label + ":"
+		if focused {
+			labelStr = "▶ " + labelStr
+		} else {
+			labelStr = "  " + labelStr
+		}
+
+		b.WriteString(m.styles.InputLabel.Render(labelStr))
+		b.WriteString("\n")
+
+		switch i {
+		case 0: // ID
+			style := m.styles.Input
+			if focused {
+				style = m.styles.InputFocused
+			}
+			if f.mode == "edit" {
+				b.WriteString(m.styles.SubtleText().Render("  " + sc.ID + " (cannot change in edit mode)"))
+			} else {
+				b.WriteString(style.Width(40).Render(f.inputs[i].View()))
+			}
+
+		case 1: // Provider
+			provStr := fmt.Sprintf("[ %s ]", sc.Provider)
+			if focused {
+				provStr = m.styles.ListSelected.Render("▶ " + provStr)
+			} else {
+				provStr = m.styles.ListItem.Render("  " + provStr)
+			}
+			hint := ""
+			if f.mode == "add" {
+				hint = m.styles.SubtleText().Render("  Enter/←/→ to cycle")
+			}
+			b.WriteString(provStr + hint)
+
+		case 4: // Enabled
+			enabledStr := "✗ disabled"
+			enabledStyle := m.styles.StatusError
+			if sc.Enabled {
+				enabledStr = "✓ enabled"
+				enabledStyle = m.styles.StatusSuccess
+			}
+			row := enabledStyle.Render(enabledStr)
+			if focused {
+				row = m.styles.ListSelected.Render("▶ " + row + "  (Enter/Space to toggle)")
+			} else {
+				row = m.styles.ListItem.Render("  " + row)
+			}
+			b.WriteString(row)
+
+		default:
+			if i == mi {
+				// Mounts pseudo-field
+				b.WriteString(m.styles.SubtleText().Render(fmt.Sprintf("  %d mounts configured:", len(sc.Mounts))))
+				b.WriteString("\n")
+				for j, mount := range sc.Mounts {
+					mountLine := fmt.Sprintf("    [%d] path=%s  version=%d", j+1, mount.Path, mount.Version)
+					if f.editingMount == j {
+						subIndic := "path"
+						if f.editingSubfield == 1 {
+							subIndic = "version"
+						}
+						mountLine += fmt.Sprintf("  [editing %s]", subIndic)
+						b.WriteString(m.styles.ListSelected.Render(mountLine))
+					} else {
+						b.WriteString(m.styles.ListItem.Render(mountLine))
+					}
+					b.WriteString("\n")
+				}
+				if focused {
+					b.WriteString(m.styles.SubtleText().Render("  n=add mount  d=remove last  e=edit first"))
+				}
+
+			} else if i == ti {
+				// Templates pseudo-field
+				count := len(sc.Templates)
+				tplLine := fmt.Sprintf("  Templates: %d", count)
+				if focused {
+					tplLine += "  [t to manage — v2 coming soon]"
+					b.WriteString(m.styles.ListSelected.Render(tplLine))
+				} else {
+					b.WriteString(m.styles.ListItem.Render(tplLine))
+				}
+
+			} else if isTextField(i) && i < len(f.inputs) {
+				style := m.styles.Input
+				if focused {
+					style = m.styles.InputFocused
+				}
+				b.WriteString(style.Width(50).Render(f.inputs[i].View()))
+			}
+		}
+		b.WriteString("\n\n")
+	}
+
+	// Error message
+	if f.errMsg != "" {
+		b.WriteString(m.styles.StatusError.Render("Error: " + f.errMsg))
+		b.WriteString("\n\n")
+	}
+
+	b.WriteString(m.styles.SubtleText().Render("Ctrl+S save  •  Esc cancel  •  Tab/↑↓ navigate"))
+
+	return m.styles.Dialog.Render(b.String())
+}
+
+// ── Source Login Prompt ───────────────────────────────────────────────────────
+
+// updateSourceLoginPrompt handles the approle secret_id input view.
+func (m Model) updateSourceLoginPrompt(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "enter":
+		secretID := m.sourceLoginInput.Value()
+		if secretID == "" {
+			m.statusMsg = "Secret ID is required"
+			m.statusErr = true
+			return m, nil
+		}
+		if err := vault.SaveAppRoleSecretID(m.sourceLoginSourceID, secretID); err != nil {
+			m.statusMsg = fmt.Sprintf("Failed to save secret ID: %v", err)
+			m.statusErr = true
+			m.view = ViewSourcesEditor
+			return m, nil
+		}
+		// Now try to login with the stored secret_id
+		var sc config.SourceConfig
+		for _, s := range m.config.Sources {
+			if s.ID == m.sourceLoginSourceID {
+				sc = s
+				break
+			}
+		}
+		ctx := context.Background()
+		_, err := vault.NewFromSourceConfig(ctx, sc)
+		if err != nil {
+			m.statusMsg = fmt.Sprintf("Login failed: %v", err)
+			m.statusErr = true
+		} else {
+			m.statusMsg = "Login successful"
+			m.statusErr = false
+		}
+		m.sourceLoginInput.SetValue("")
+		m.sourceLoginInput.Blur()
+		m.view = ViewSourcesEditor
+		return m, nil
+
+	case "esc":
+		m.sourceLoginInput.SetValue("")
+		m.sourceLoginInput.Blur()
+		m.view = ViewSourcesEditor
+		return m, nil
+	}
+
+	var cmd tea.Cmd
+	m.sourceLoginInput, cmd = m.sourceLoginInput.Update(msg)
+	return m, cmd
+}
+
+// viewSourceLoginPrompt renders the approle secret_id input screen.
+func (m Model) viewSourceLoginPrompt() string {
+	var b strings.Builder
+
+	b.WriteString(m.styles.DialogTitle.Render("🔐 Vault AppRole Login"))
+	b.WriteString("\n\n")
+	b.WriteString(m.styles.DetailLabel.Render("Source: "))
+	b.WriteString(m.styles.ProviderBadge("vault").Render(m.sourceLoginSourceID))
+	b.WriteString("\n\n")
+	b.WriteString(m.styles.InputLabel.Render("Secret ID:"))
+	b.WriteString("\n")
+	b.WriteString(m.styles.SubtleText().Render("(input hidden — value will be stored in OS keyring)"))
+	b.WriteString("\n")
+	b.WriteString(m.styles.InputFocused.Width(50).Render(m.sourceLoginInput.View()))
+	b.WriteString("\n\n")
+	b.WriteString(m.styles.SubtleText().Render("Enter to submit  •  Esc to cancel"))
 
 	return m.styles.Dialog.Render(b.String())
 }
