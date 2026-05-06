@@ -1,12 +1,16 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 	"github.com/theburrowhub/go-secret/internal/config"
+	"github.com/theburrowhub/go-secret/internal/providers/gsm"
+	"github.com/theburrowhub/go-secret/internal/providers/vault"
+	"github.com/theburrowhub/go-secret/internal/sources"
 	"github.com/theburrowhub/go-secret/internal/ui"
 )
 
@@ -18,6 +22,7 @@ var (
 
 	// Flags
 	projectID string
+	sourceID  string
 )
 
 // rootCmd represents the base command when called without any subcommands
@@ -51,10 +56,22 @@ func Execute() {
 }
 
 func init() {
-	rootCmd.Flags().StringVarP(&projectID, "project", "p", "", "GCP Project ID")
-	
+	rootCmd.PersistentFlags().StringVarP(&projectID, "project", "p", "", "GCP Project ID (deprecated alias for --source on gsm sources)")
+	rootCmd.PersistentFlags().StringVar(&sourceID, "source", "", "Source ID (defined in config)")
+
 	// Add version flag
 	rootCmd.Version = fmt.Sprintf("%s (commit: %s, built: %s)", Version, Commit, BuildDate)
+
+	// Wire the real provider constructors so sources.LoadFromConfig can build
+	// GSM and Vault clients without creating an import cycle.
+	sources.RegisterProviderConstructors(
+		func(ctx context.Context, sc config.SourceConfig) (sources.Provider, error) {
+			return gsm.NewFromSourceConfig(ctx, sc)
+		},
+		func(ctx context.Context, sc config.SourceConfig) (sources.Provider, error) {
+			return vault.NewFromSourceConfig(ctx, sc)
+		},
+	)
 }
 
 func runTUI() {
