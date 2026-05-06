@@ -10,8 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/theburrowhub/go-secret/internal/audit"
-	"github.com/theburrowhub/go-secret/internal/config"
-	"github.com/theburrowhub/go-secret/internal/providers/gsm"
+	"github.com/theburrowhub/go-secret/internal/sources"
 	"golang.org/x/term"
 )
 
@@ -64,26 +63,30 @@ func init() {
 func runCreate(secretName string) error {
 	ctx := context.Background()
 
-	// Cargar configuración
-	cfg, err := config.Load()
+	cfg, reg, _, err := loadRegistry(ctx)
 	if err != nil {
-		return fmt.Errorf("error cargando configuración: %w", err)
+		return err
+	}
+	defer func() { _ = reg.Close() }()
+
+	target := resolveActiveSource(cfg)
+	if target == "" {
+		picked, err := sources.PromptForSource(reg.Active())
+		if err != nil {
+			return fmt.Errorf("select source: %w", err)
+		}
+		target = picked
 	}
 
-	// Determinar el proyecto a usar
-	proj := projectID
-	if proj == "" {
-		proj = cfg.ProjectID
-	}
-	if proj == "" {
-		return fmt.Errorf("no se especificó project ID. Usa --project o configura un proyecto por defecto")
+	p, err := reg.Get(target)
+	if err != nil {
+		return fmt.Errorf("source %q not found: %w", target, err)
 	}
 
-	// Obtener el valor del secreto
+	// Obtain the secret value.
 	var value []byte
 	switch {
 	case createFromStdin:
-		// Leer desde stdin
 		scanner := bufio.NewScanner(os.Stdin)
 		var lines []string
 		for scanner.Scan() {
@@ -95,7 +98,6 @@ func runCreate(secretName string) error {
 		value = []byte(strings.Join(lines, "\n"))
 
 	case createFromFile != "":
-		// Leer desde archivo
 		fileData, err := os.ReadFile(createFromFile)
 		if err != nil {
 			return fmt.Errorf("error leyendo archivo: %w", err)
@@ -103,14 +105,12 @@ func runCreate(secretName string) error {
 		value = fileData
 
 	case createValue != "":
-		// Usar valor de flag (no recomendado)
 		value = []byte(createValue)
 
 	default:
-		// Modo interactivo (por defecto)
 		fmt.Printf("Ingresa el valor del secreto (entrada oculta): ")
 		password, err := term.ReadPassword(int(syscall.Stdin))
-		fmt.Println() // Nueva línea después de la entrada
+		fmt.Println()
 		if err != nil {
 			return fmt.Errorf("error leyendo valor: %w", err)
 		}
@@ -121,7 +121,7 @@ func runCreate(secretName string) error {
 		return fmt.Errorf("el valor del secreto no puede estar vacío")
 	}
 
-	// Parsear etiquetas
+	// Parse labels.
 	labels := make(map[string]string)
 	for _, label := range createLabels {
 		parts := strings.SplitN(label, "=", 2)
@@ -131,16 +131,12 @@ func runCreate(secretName string) error {
 		labels[parts[0]] = parts[1]
 	}
 
-	// Crear cliente GCP
-	client, err := gsm.NewClient(ctx, proj)
-	if err != nil {
-		return fmt.Errorf("error creando cliente GCP: %w", err)
-	}
-	defer func() { _ = client.Close() }()
-
-	// Crear el secreto
-	if err := client.CreateSecret(ctx, secretName, labels, createLocation); err != nil {
-		// Registrar error en audit log
+	// Create the secret via the provider.
+	createErr := p.Create(ctx, secretName, value, sources.CreateOpts{
+		Labels:   labels,
+		Location: createLocation,
+	})
+	if createErr != nil {
 		if cfg.Audit.Enabled {
 			auditCfg := audit.Config{
 				Enabled:    cfg.Audit.Enabled,
@@ -151,17 +147,16 @@ func runCreate(secretName string) error {
 			auditLogger, _ := audit.NewLogger(auditCfg)
 			if auditLogger != nil {
 				defer func() { _ = auditLogger.Close() }()
-				auditLogger.SetUser(client.UserEmail())
-				auditLogger.LogSecretCreate(proj, secretName, audit.ResultFailure, err.Error())
+				auditLogger.SetUser(p.UserEmail())
+				auditLogger.LogSecretCreate(target, secretName, audit.ResultFailure, createErr.Error())
 			}
 		}
-		return fmt.Errorf("error creando secreto: %w", err)
+		return fmt.Errorf("error creando secreto: %w", createErr)
 	}
 
-	// Añadir la primera versión con el valor
-	version, err := client.AddSecretVersion(ctx, secretName, value)
-	if err != nil {
-		// Registrar error en audit log
+	// Add the initial version with the value.
+	version, versionErr := p.AddVersion(ctx, secretName, value)
+	if versionErr != nil {
 		if cfg.Audit.Enabled {
 			auditCfg := audit.Config{
 				Enabled:    cfg.Audit.Enabled,
@@ -172,20 +167,20 @@ func runCreate(secretName string) error {
 			auditLogger, _ := audit.NewLogger(auditCfg)
 			if auditLogger != nil {
 				defer func() { _ = auditLogger.Close() }()
-				auditLogger.SetUser(client.UserEmail())
-				auditLogger.LogVersionAdd(proj, secretName, "", audit.ResultFailure, err.Error())
+				auditLogger.SetUser(p.UserEmail())
+				auditLogger.LogVersionAdd(target, secretName, "", audit.ResultFailure, versionErr.Error())
 			}
 		}
-		return fmt.Errorf("error añadiendo versión inicial: %w", err)
+		return fmt.Errorf("error añadiendo versión inicial: %w", versionErr)
 	}
 
-	// Guardar ubicación en configuración si se especificó y no está guardada
+	// Save location in config if specified.
 	if createLocation != "" {
 		cfg.AddSecretLocation(createLocation)
 		_ = cfg.Save()
 	}
 
-	// Registrar en audit log si está habilitado
+	// Audit log success.
 	if cfg.Audit.Enabled {
 		auditCfg := audit.Config{
 			Enabled:    cfg.Audit.Enabled,
@@ -196,9 +191,9 @@ func runCreate(secretName string) error {
 		auditLogger, err := audit.NewLogger(auditCfg)
 		if err == nil {
 			defer func() { _ = auditLogger.Close() }()
-			auditLogger.SetUser(client.UserEmail())
-			auditLogger.LogSecretCreate(proj, secretName, audit.ResultSuccess, "")
-			auditLogger.LogVersionAdd(proj, secretName, version.Name, audit.ResultSuccess, "")
+			auditLogger.SetUser(p.UserEmail())
+			auditLogger.LogSecretCreate(target, secretName, audit.ResultSuccess, "")
+			auditLogger.LogVersionAdd(target, secretName, version.Name, audit.ResultSuccess, "")
 		}
 	}
 
