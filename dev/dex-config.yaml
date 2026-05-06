@@ -1,0 +1,20 @@
+issuer: http://localhost:5556
+storage:
+  type: memory
+web:
+  http: 0.0.0.0:5556
+oauth2:
+  skipApprovalScreen: true
+staticClients:
+  - id: vault
+    redirectURIs:
+      - "http://localhost:8200/v1/auth/oidc/oidc/callback"
+      - "http://127.0.0.1:8250/oidc/callback"
+    name: Vault
+    secret: vault-secret
+enablePasswordDB: true
+staticPasswords:
+  - email: dev@local
+    hash: "$2a$10$2b2cu2a8X5yQwaWpL5N0LeYa3bnz6ZrqV2gDl8l9KZtkOjWYzZjqe"
+    username: dev
+    userID: "1"
