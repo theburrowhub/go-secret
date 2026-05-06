@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"text/template"
@@ -3588,6 +3590,41 @@ func (m Model) updateSourcesEditor(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.statusErr = false
 			}
 		}
+	case "V":
+		// Vault auto-discovery: detect VAULT_ADDR + token, enumerate KV mounts,
+		// then pre-populate the source form so the user just confirms with Ctrl+S.
+		address := os.Getenv("VAULT_ADDR")
+		token := os.Getenv("VAULT_TOKEN")
+		if token == "" {
+			if home, err := os.UserHomeDir(); err == nil {
+				if data, err := os.ReadFile(filepath.Join(home, ".vault-token")); err == nil {
+					token = strings.TrimSpace(string(data))
+				}
+			}
+		}
+		if address == "" || token == "" {
+			m.statusMsg = "Set VAULT_ADDR + token (~/.vault-token or VAULT_TOKEN env) first"
+			m.statusErr = true
+			return m, nil
+		}
+		ctx := context.Background()
+		mounts, err := vault.DiscoverMounts(ctx, address, token)
+		if err != nil {
+			m.statusMsg = fmt.Sprintf("Vault detect failed: %v", err)
+			m.statusErr = true
+			return m, nil
+		}
+		if len(mounts) == 0 {
+			m.statusMsg = fmt.Sprintf("No KV mounts at %s", address)
+			m.statusErr = true
+			return m, nil
+		}
+		id := vault.SuggestSourceID(address)
+		sc := vault.BuildSourceConfigFromDiscovery(id, address, mounts)
+		_ = vault.SaveToken(id, token)
+		m.sourceForm = m.initSourceForm("add", sc)
+		m.view = ViewSourceForm
+		return m, textinput.Blink
 	case "esc", "q":
 		m.view = ViewConfigMenu
 	}
@@ -3682,7 +3719,7 @@ func (m Model) viewSourcesEditor() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(m.styles.SubtleText().Render("n add  e/Enter edit  d delete  t toggle  l login  Esc back"))
+	b.WriteString(m.styles.SubtleText().Render("n add  e/Enter edit  d delete  t toggle  l login  V vault-detect  Esc back"))
 
 	return m.styles.Dialog.Render(b.String())
 }

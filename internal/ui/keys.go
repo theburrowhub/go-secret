@@ -295,6 +295,7 @@ func SourcesEditorBindings() []FooterBinding {
 		{Key: "d", Desc: "delete"},
 		{Key: "t", Desc: "toggle"},
 		{Key: "l", Desc: "login"},
+		{Key: "V", Desc: "vault auto-detect"},
 		{Key: "Esc", Desc: "back"},
 	}
 }
