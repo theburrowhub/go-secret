@@ -31,6 +31,39 @@
 - ⚙️ **Configurable**: Store settings in a YAML config file
 - 🎨 **Beautiful UI**: Modern terminal interface with Darcula theme and keyboard shortcuts
 
+## 🌐 Multi-source
+
+`go-secret` ahora puede gestionar simultáneamente secretos de **GCP Secret Manager** y de **HashiCorp Vault** (KV v1 y v2). Define cada backend como una "source" en `config.yaml` y úsalas en paralelo:
+
+```yaml
+default_source: gsm-prod
+sources:
+  - id: gsm-prod
+    provider: gsm
+    enabled: true
+    project_id: my-prod-project
+
+  - id: vault-corp
+    provider: vault
+    enabled: true
+    address: https://vault.corp.io
+    auth: { method: oidc, role: developer }
+    mounts:
+      - { path: secret, version: 2 }
+```
+
+Al ejecutar `go-secret list` sin `--source`, verás los secretos de ambas fuentes en una sola lista, distinguidos por la columna `PROVIDER`. En la TUI, `Tab` cicla el filtro por fuente y `Ctrl+P` abre el picker de fuentes.
+
+### Auth Vault soportado
+
+- `token` — `VAULT_TOKEN` env, keyring del SO o `~/.vault-token`
+- `approle` — `role_id` en config, `secret_id` en keyring (interactivo via `go-secret sources login <id>`)
+- `oidc` — flujo browser con callback en `127.0.0.1:8250` (puerto configurable)
+
+### Migración desde versiones anteriores
+
+Tu config existente (`project_id` raíz + `recent_projects`) se migra automáticamente a una entry `sources` GSM la primera vez que arrancas la nueva versión. No se pierde ningún proyecto.
+
 ---
 
 ## 🛡️ Security Features
