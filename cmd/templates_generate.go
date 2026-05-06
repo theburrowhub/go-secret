@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"text/template"
@@ -10,8 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/theburrowhub/go-secret/internal/clipboard"
-	"github.com/theburrowhub/go-secret/internal/config"
-	"github.com/theburrowhub/go-secret/internal/providers/gsm"
+	"github.com/theburrowhub/go-secret/internal/sources"
 )
 
 var (
@@ -30,7 +30,7 @@ Usa 'go-secret templates list' para ver los índices de las plantillas.
 Las variables disponibles son:
   {{.SecretName}}     - Nombre del secreto
   {{.FullSecretName}} - Nombre completo del secreto
-  {{.ProjectID}}      - ID del proyecto GCP
+  {{.ProjectID}}      - ID del proyecto GCP (o source ID para otros backends)
 
 Ejemplos:
   go-secret generate database-password
@@ -51,11 +51,11 @@ func init() {
 func runTemplatesGenerate(secretName string) error {
 	ctx := context.Background()
 
-	// Cargar configuración
-	cfg, err := config.Load()
+	cfg, reg, uc, err := loadRegistry(ctx)
 	if err != nil {
-		return fmt.Errorf("error cargando configuración: %w", err)
+		return err
 	}
+	defer func() { _ = reg.Close() }()
 
 	// Validar índice
 	if templateGenerateIndex < 1 || templateGenerateIndex > len(cfg.Templates) {
@@ -66,21 +66,23 @@ func runTemplatesGenerate(secretName string) error {
 	idx := templateGenerateIndex - 1
 	tmpl := cfg.Templates[idx]
 
-	// Determinar el proyecto a usar
-	proj := projectID
-	if proj == "" {
-		proj = cfg.ProjectID
-	}
-	if proj == "" {
-		return fmt.Errorf("no se especificó project ID. Usa --project o configura un proyecto por defecto")
+	p, err := uc.Resolve(ctx, secretName, sourceID)
+	if err != nil {
+		if errors.Is(err, sources.ErrAmbiguousSecret) {
+			return fmt.Errorf("%w. Use --source <id>", err)
+		}
+		return err
 	}
 
-	// Crear cliente GCP (para obtener información del secreto)
-	client, err := gsm.NewClient(ctx, proj)
-	if err != nil {
-		return fmt.Errorf("error creando cliente GCP: %w", err)
+	// Determine ProjectID: look up source config by p.ID() to find ProjectID field.
+	// Falls back to p.ID() for non-GSM backends.
+	projectIDVal := p.ID()
+	for _, sc := range cfg.Sources {
+		if sc.ID == p.ID() && sc.ProjectID != "" {
+			projectIDVal = sc.ProjectID
+			break
+		}
 	}
-	defer func() { _ = client.Close() }()
 
 	// Preparar datos para la plantilla
 	data := struct {
@@ -90,7 +92,7 @@ func runTemplatesGenerate(secretName string) error {
 	}{
 		SecretName:     extractSecretName(secretName, cfg.FolderSeparator),
 		FullSecretName: secretName,
-		ProjectID:      proj,
+		ProjectID:      projectIDVal,
 	}
 
 	// Parsear y ejecutar plantilla
