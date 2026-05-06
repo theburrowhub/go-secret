@@ -2,16 +2,14 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
-	"sort"
-	"strings"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 	"github.com/theburrowhub/go-secret/internal/audit"
-	"github.com/theburrowhub/go-secret/internal/config"
-	"github.com/theburrowhub/go-secret/internal/providers/gsm"
+	"github.com/theburrowhub/go-secret/internal/sources"
 )
 
 var (
@@ -22,14 +20,15 @@ var (
 var listCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List all secrets in the project",
-	Long: `Lists all secrets available in the GCP project.
+	Long: `Lists all secrets available across configured sources.
 
 You can filter results using the --filter flag to search by name.
+Use --source to restrict listing to a single backend.
 
 Examples:
   go-secret list
   go-secret list --filter database
-  go-secret list --project my-gcp-project
+  go-secret list --source my-gsm
   go-secret list --output json`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runList()
@@ -44,52 +43,35 @@ func init() {
 
 func runList() error {
 	ctx := context.Background()
-
-	// Load configuration
-	cfg, err := config.Load()
+	cfg, reg, uc, err := loadRegistry(ctx)
 	if err != nil {
-		return fmt.Errorf("error loading configuration: %w", err)
+		return err
 	}
+	defer func() { _ = reg.Close() }()
 
-	// Determine project to use
-	proj := projectID
-	if proj == "" {
-		proj = cfg.ProjectID
-	}
-	if proj == "" {
-		return fmt.Errorf("no project ID specified. Use --project or configure a default project")
-	}
-
-	// Create GCP client
-	client, err := gsm.NewClient(ctx, proj)
-	if err != nil {
-		return fmt.Errorf("error creating GCP client: %w", err)
-	}
-	defer func() { _ = client.Close() }()
-
-	// List secrets
-	secrets, err := client.ListSecrets(ctx)
-	if err != nil {
-		return fmt.Errorf("error listing secrets: %w", err)
-	}
-
-	// Filter if specified
-	if listFilter != "" {
-		filtered := make([]gsm.Secret, 0)
-		for _, s := range secrets {
-			if strings.Contains(strings.ToLower(s.Name), strings.ToLower(listFilter)) {
-				filtered = append(filtered, s)
-			}
+	var (
+		secrets []sources.Secret
+		listErr error
+	)
+	if sourceID != "" {
+		p, err := reg.Get(sourceID)
+		if err != nil {
+			return err
 		}
-		secrets = filtered
+		secrets, listErr = p.List(ctx)
+	} else {
+		secrets, listErr = uc.List(ctx)
+	}
+	if listErr != nil {
+		var pe *sources.PartialError
+		if errors.As(listErr, &pe) {
+			fmt.Fprintf(os.Stderr, "warning: partial failure: %v\n", pe)
+		} else {
+			return listErr
+		}
 	}
 
-	// Sort by name
-	sort.Slice(secrets, func(i, j int) bool {
-		return secrets[i].Name < secrets[j].Name
-	})
-
-	// Register in audit log if enabled
+	// audit logging adapted in Task 29
 	if cfg.Audit.Enabled {
 		auditCfg := audit.Config{
 			Enabled:    cfg.Audit.Enabled,
@@ -97,72 +79,55 @@ func runList() error {
 			MaxSizeMB:  cfg.Audit.MaxSizeMB,
 			MaxAgeDays: cfg.Audit.MaxAgeDays,
 		}
-		auditLogger, err := audit.NewLogger(auditCfg)
-		if err == nil {
+		if auditLogger, auditErr := audit.NewLogger(auditCfg); auditErr == nil {
 			defer func() { _ = auditLogger.Close() }()
-			auditLogger.SetUser(client.UserEmail())
-			auditLogger.LogSecretList(proj, len(secrets), audit.ResultSuccess, "")
+			// source-specific user email wiring is handled in Task 29
+			auditLogger.LogSecretList(sourceID, len(secrets), audit.ResultSuccess, "")
 		}
 	}
 
-	// Show results according to format
 	switch listOutput {
 	case "json":
-		return outputJSON(secrets)
+		return outputListJSON(secrets)
 	case "yaml":
-		return outputYAML(secrets)
+		return outputListYAML(secrets)
 	default:
-		return outputTable(secrets, cfg.FolderSeparator)
+		return outputListTable(secrets)
 	}
 }
 
-func outputTable(secrets []gsm.Secret, separator string) error {
-	if len(secrets) == 0 {
-		fmt.Println("No secrets found")
-		return nil
-	}
-
+func outputListTable(secrets []sources.Secret) error {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-	_, _ = fmt.Fprintln(w, "NAME\tCREATED\tREPLICATION")
-	_, _ = fmt.Fprintln(w, "----\t-------\t-----------")
-
+	_, _ = fmt.Fprintln(w, "PROVIDER\tNAME\tCREATED\tREPLICATION")
+	_, _ = fmt.Fprintln(w, "--------\t----\t-------\t-----------")
 	for _, s := range secrets {
-		// Show folder structure if using separator
-		name := s.Name
-		if separator != "" && separator != "/" {
-			name = strings.ReplaceAll(name, separator, "/")
-		}
-
-		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\n", name, s.CreateTime, s.Replication)
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", s.SourceID, s.Name, s.CreateTime, s.Replication)
 	}
-
 	_ = w.Flush()
 	fmt.Printf("\nTotal: %d secrets\n", len(secrets))
 	return nil
 }
 
-func outputJSON(secrets []gsm.Secret) error {
-	// Simple JSON output implementation
+func outputListJSON(secrets []sources.Secret) error {
 	fmt.Println("[")
 	for i, s := range secrets {
 		comma := ","
 		if i == len(secrets)-1 {
 			comma = ""
 		}
-		fmt.Printf("  {\"name\": \"%s\", \"created\": \"%s\", \"replication\": \"%s\"}%s\n",
-			s.Name, s.CreateTime, s.Replication, comma)
+		fmt.Printf("  {\"source_id\": %q, \"name\": %q, \"created\": %q, \"replication\": %q}%s\n",
+			s.SourceID, s.Name, s.CreateTime, s.Replication, comma)
 	}
 	fmt.Println("]")
 	return nil
 }
 
-func outputYAML(secrets []gsm.Secret) error {
-	// Simple YAML output implementation
-	fmt.Println("secrets:")
+func outputListYAML(secrets []sources.Secret) error {
 	for _, s := range secrets {
-		fmt.Printf("  - name: %s\n", s.Name)
-		fmt.Printf("    created: %s\n", s.CreateTime)
-		fmt.Printf("    replication: %s\n", s.Replication)
+		fmt.Printf("- source_id: %s\n", s.SourceID)
+		fmt.Printf("  name: %s\n", s.Name)
+		fmt.Printf("  created: %s\n", s.CreateTime)
+		fmt.Printf("  replication: %s\n", s.Replication)
 	}
 	return nil
 }
