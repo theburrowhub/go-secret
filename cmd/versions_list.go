@@ -2,14 +2,14 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 	"github.com/theburrowhub/go-secret/internal/audit"
-	"github.com/theburrowhub/go-secret/internal/config"
-	"github.com/theburrowhub/go-secret/internal/providers/gsm"
+	"github.com/theburrowhub/go-secret/internal/sources"
 )
 
 var versionsListCmd = &cobra.Command{
@@ -40,30 +40,22 @@ func init() {
 func runVersionsList(secretName string) error {
 	ctx := context.Background()
 
-	// Cargar configuración
-	cfg, err := config.Load()
+	cfg, reg, uc, err := loadRegistry(ctx)
 	if err != nil {
-		return fmt.Errorf("error cargando configuración: %w", err)
+		return err
 	}
+	defer func() { _ = reg.Close() }()
 
-	// Determinar el proyecto a usar
-	proj := projectID
-	if proj == "" {
-		proj = cfg.ProjectID
-	}
-	if proj == "" {
-		return fmt.Errorf("no se especificó project ID. Usa --project o configura un proyecto por defecto")
-	}
-
-	// Crear cliente GCP
-	client, err := gsm.NewClient(ctx, proj)
+	p, err := uc.Resolve(ctx, secretName, sourceID)
 	if err != nil {
-		return fmt.Errorf("error creando cliente GCP: %w", err)
+		if errors.Is(err, sources.ErrAmbiguousSecret) {
+			return fmt.Errorf("%w. Use --source <id>", err)
+		}
+		return err
 	}
-	defer func() { _ = client.Close() }()
 
 	// Listar versiones
-	versions, err := client.ListSecretVersions(ctx, secretName)
+	versions, err := p.ListVersions(ctx, secretName)
 	if err != nil {
 		return fmt.Errorf("error listando versiones: %w", err)
 	}
@@ -79,11 +71,11 @@ func runVersionsList(secretName string) error {
 		auditLogger, err := audit.NewLogger(auditCfg)
 		if err == nil {
 			defer func() { _ = auditLogger.Close() }()
-			auditLogger.SetUser(client.UserEmail())
+			auditLogger.SetUser(p.UserEmail())
 			_ = auditLogger.Log(audit.Event{
 				EventType:  audit.EventVersionList,
 				Result:     audit.ResultSuccess,
-				ProjectID:  proj,
+				ProjectID:  p.ID(),
 				SecretName: secretName,
 			})
 		}
@@ -103,11 +95,11 @@ func runVersionsList(secretName string) error {
 		state := v.State
 		// Formatear estado para mejor legibilidad
 		switch v.State {
-		case "STATE_ENABLED":
+		case "STATE_ENABLED", "ENABLED":
 			state = "✓ ENABLED"
-		case "STATE_DISABLED":
+		case "STATE_DISABLED", "DISABLED":
 			state = "○ DISABLED"
-		case "STATE_DESTROYED":
+		case "STATE_DESTROYED", "DESTROYED":
 			state = "✕ DESTROYED"
 		}
 		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\n", v.Name, state, v.CreateTime)
