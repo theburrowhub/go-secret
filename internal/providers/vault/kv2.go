@@ -3,6 +3,7 @@ package vault
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -144,4 +145,41 @@ func (c *Client) listVersionsKV2(ctx context.Context, m mountInfo, rel string) (
 		out = append(out, sources.Version{Name: k, State: state, CreateTime: ct})
 	}
 	return out, nil
+}
+
+func (c *Client) writeKV2(ctx context.Context, m mountInfo, rel string, value []byte) (string, error) {
+	path := fmt.Sprintf("%s/data/%s", m.Path, rel)
+	payload := map[string]interface{}{
+		"data": map[string]interface{}{"value": string(value)},
+	}
+	s, err := c.api.Logical().WriteWithContext(ctx, path, payload)
+	if err != nil {
+		return "", err
+	}
+	if s != nil && s.Data != nil {
+		switch v := s.Data["version"].(type) {
+		case json.Number:
+			return v.String(), nil
+		case float64:
+			return fmt.Sprintf("%d", int(v)), nil
+		case string:
+			return v, nil
+		}
+	}
+	return "", nil
+}
+
+func (c *Client) deleteKV2(ctx context.Context, m mountInfo, rel string) error {
+	path := fmt.Sprintf("%s/metadata/%s", m.Path, rel)
+	_, err := c.api.Logical().DeleteWithContext(ctx, path)
+	return err
+}
+
+func (c *Client) versionOpKV2(ctx context.Context, m mountInfo, rel, version, op string) error {
+	// op = "delete" | "undelete" | "destroy"
+	path := fmt.Sprintf("%s/%s/%s", m.Path, op, rel)
+	_, err := c.api.Logical().WriteWithContext(ctx, path, map[string]interface{}{
+		"versions": []string{version},
+	})
+	return err
 }

@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	vaultapi "github.com/hashicorp/vault/api"
+	"github.com/theburrowhub/go-secret/internal/sources"
 )
 
 func newKV2Server(t *testing.T) *httptest.Server {
@@ -109,6 +110,48 @@ func TestKV2_ListVersionsNormalizesState(t *testing.T) {
 	}
 	if stateBy["1"] != "ENABLED" || stateBy["2"] != "DESTROYED" || stateBy["3"] != "ENABLED" {
 		t.Fatalf("unexpected states: %v", stateBy)
+	}
+}
+
+func TestKV2_CreateAddVersion(t *testing.T) {
+	calls := []string{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/secret/data/", func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, r.Method+" "+r.URL.Path)
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"data": map[string]interface{}{"version": 1, "created_time": "now"},
+		})
+	})
+	mux.HandleFunc("/v1/secret/metadata/", func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, r.Method+" "+r.URL.Path)
+		w.WriteHeader(http.StatusNoContent)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	c := newTestClient(t, srv.URL, mountInfo{Path: "secret", Version: 2})
+
+	if err := c.Create(context.Background(), "app/db", []byte("v1"), sources.CreateOpts{}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := c.AddVersion(context.Background(), "app/db", []byte("v2")); err != nil {
+		t.Fatalf("AddVersion: %v", err)
+	}
+	if err := c.Delete(context.Background(), "app/db"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	wantSubstrings := []string{"PUT /v1/secret/data/app/db", "DELETE /v1/secret/metadata/app/db"}
+	for _, w := range wantSubstrings {
+		found := false
+		for _, c := range calls {
+			if strings.Contains(c, w) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("missing call %q in %v", w, calls)
+		}
 	}
 }
 

@@ -3,7 +3,6 @@ package vault
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	vaultapi "github.com/hashicorp/vault/api"
@@ -164,34 +163,85 @@ func (c *Client) ListVersions(ctx context.Context, name string) ([]sources.Versi
 	return c.listVersionsKV2(ctx, m, rel)
 }
 
-// Create implements sources.Provider. Full implementation in Task 12.
+// Create implements sources.Provider.
 func (c *Client) Create(ctx context.Context, name string, value []byte, opts sources.CreateOpts) error {
-	return errors.New("vault.Client.Create not implemented")
+	m, rel, err := c.resolveMount(name)
+	if err != nil {
+		return err
+	}
+	if m.Version == 1 {
+		return c.writeKV1(ctx, m, rel, value)
+	}
+	_, err = c.writeKV2(ctx, m, rel, value)
+	return err
 }
 
-// Delete implements sources.Provider. Full implementation in Task 12.
+// Delete implements sources.Provider.
 func (c *Client) Delete(ctx context.Context, name string) error {
-	return errors.New("vault.Client.Delete not implemented")
+	m, rel, err := c.resolveMount(name)
+	if err != nil {
+		return err
+	}
+	if m.Version == 1 {
+		return c.deleteKV1(ctx, m, rel)
+	}
+	return c.deleteKV2(ctx, m, rel)
 }
 
-// AddVersion implements sources.Provider. Full implementation in Task 13.
+// AddVersion implements sources.Provider.
 func (c *Client) AddVersion(ctx context.Context, name string, value []byte) (*sources.Version, error) {
-	return nil, errors.New("vault.Client.AddVersion not implemented")
+	m, rel, err := c.resolveMount(name)
+	if err != nil {
+		return nil, err
+	}
+	if m.Version == 1 {
+		// KV v1: overwriting is the only "add version" semantic.
+		if err := c.writeKV1(ctx, m, rel, value); err != nil {
+			return nil, err
+		}
+		return &sources.Version{Name: "1", State: "ENABLED"}, nil
+	}
+	v, err := c.writeKV2(ctx, m, rel, value)
+	if err != nil {
+		return nil, err
+	}
+	return &sources.Version{Name: v, State: "ENABLED"}, nil
 }
 
 // EnableVersion implements sources.Provider. Requires KV v2.
 func (c *Client) EnableVersion(ctx context.Context, name, version string) error {
-	return sources.WrapNotSupported("EnableVersion not supported until KV v2 implemented")
+	m, rel, err := c.resolveMount(name)
+	if err != nil {
+		return err
+	}
+	if m.Version == 1 {
+		return sources.WrapNotSupported("KV v1 has no versions")
+	}
+	return c.versionOpKV2(ctx, m, rel, version, "undelete")
 }
 
 // DisableVersion implements sources.Provider. Requires KV v2.
 func (c *Client) DisableVersion(ctx context.Context, name, version string) error {
-	return sources.WrapNotSupported("DisableVersion not supported until KV v2 implemented")
+	m, rel, err := c.resolveMount(name)
+	if err != nil {
+		return err
+	}
+	if m.Version == 1 {
+		return sources.WrapNotSupported("KV v1 has no versions")
+	}
+	return c.versionOpKV2(ctx, m, rel, version, "delete")
 }
 
 // DestroyVersion implements sources.Provider. Requires KV v2.
 func (c *Client) DestroyVersion(ctx context.Context, name, version string) error {
-	return sources.WrapNotSupported("DestroyVersion not supported until KV v2 implemented")
+	m, rel, err := c.resolveMount(name)
+	if err != nil {
+		return err
+	}
+	if m.Version == 1 {
+		return sources.WrapNotSupported("KV v1 has no versions")
+	}
+	return c.versionOpKV2(ctx, m, rel, version, "destroy")
 }
 
 // Compile-time assertion that *Client satisfies sources.Provider.
