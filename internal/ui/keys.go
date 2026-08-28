@@ -121,11 +121,13 @@ func ListViewBindings() []FooterBinding {
 		{Key: "Enter/l", Desc: "open"},
 		{Key: "Esc/h", Desc: "back"},
 		{Key: "/", Desc: "filter"},
+		{Key: "Tab", Desc: "cycle source"},
 		{Key: "n", Desc: "new"},
 		{Key: "d", Desc: "delete"},
 		{Key: "^R", Desc: "refresh"},
 		{Key: "^S", Desc: "settings"},
-		{Key: "^P", Desc: "project"},
+		{Key: "^P", Desc: "sources"},
+		{Key: "^G", Desc: "switch project"},
 		{Key: "q", Desc: "quit"},
 	}
 }
@@ -271,6 +273,48 @@ func LockedViewBindings() []FooterBinding {
 	return []FooterBinding{
 		{Key: "Enter/Space", Desc: "unlock"},
 		{Key: "q", Desc: "quit"},
+	}
+}
+
+// SourcesPickerBindings returns the keybindings for the sources picker
+func SourcesPickerBindings() []FooterBinding {
+	return []FooterBinding{
+		{Key: "↑↓/jk", Desc: "navigate"},
+		{Key: "Space", Desc: "toggle"},
+		{Key: "s", Desc: "save"},
+		{Key: "Esc", Desc: "close"},
+	}
+}
+
+// SourcesEditorBindings returns the keybindings for the sources editor
+func SourcesEditorBindings() []FooterBinding {
+	return []FooterBinding{
+		{Key: "↑↓/jk", Desc: "navigate"},
+		{Key: "n", Desc: "add"},
+		{Key: "e/Enter", Desc: "edit"},
+		{Key: "d", Desc: "delete"},
+		{Key: "t", Desc: "toggle"},
+		{Key: "l", Desc: "login"},
+		{Key: "V", Desc: "vault auto-detect"},
+		{Key: "Esc", Desc: "back"},
+	}
+}
+
+// SourceFormBindings returns the keybindings for the source add/edit form
+func SourceFormBindings() []FooterBinding {
+	return []FooterBinding{
+		{Key: "Tab/↓", Desc: "next field"},
+		{Key: "Shift+Tab/↑", Desc: "prev field"},
+		{Key: "^S", Desc: "save"},
+		{Key: "Esc", Desc: "cancel"},
+	}
+}
+
+// SourceLoginBindings returns the keybindings for the vault login prompt
+func SourceLoginBindings() []FooterBinding {
+	return []FooterBinding{
+		{Key: "Enter", Desc: "submit"},
+		{Key: "Esc", Desc: "cancel"},
 	}
 }
 

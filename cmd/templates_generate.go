@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"text/template"
@@ -11,7 +12,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/theburrowhub/go-secret/internal/clipboard"
 	"github.com/theburrowhub/go-secret/internal/config"
-	"github.com/theburrowhub/go-secret/internal/gcp"
+	"github.com/theburrowhub/go-secret/internal/sources"
 )
 
 var (
@@ -30,7 +31,9 @@ Usa 'go-secret templates list' para ver los índices de las plantillas.
 Las variables disponibles son:
   {{.SecretName}}     - Nombre del secreto
   {{.FullSecretName}} - Nombre completo del secreto
-  {{.ProjectID}}      - ID del proyecto GCP
+  {{.ProjectID}}      - ID del proyecto GCP (vacío para otros backends)
+  {{.SourceID}}       - ID de la fuente del secreto
+  {{.Provider}}       - Tipo de backend ("gsm", "vault", etc.)
 
 Ejemplos:
   go-secret generate database-password
@@ -51,46 +54,72 @@ func init() {
 func runTemplatesGenerate(secretName string) error {
 	ctx := context.Background()
 
-	// Cargar configuración
-	cfg, err := config.Load()
+	cfg, reg, uc, err := loadRegistry(ctx)
 	if err != nil {
-		return fmt.Errorf("error cargando configuración: %w", err)
+		return err
+	}
+	defer func() { _ = reg.Close() }()
+
+	p, err := uc.Resolve(ctx, secretName, sourceID)
+	if err != nil {
+		if errors.Is(err, sources.ErrAmbiguousSecret) {
+			return fmt.Errorf("%w. Use --source <id>", err)
+		}
+		return err
+	}
+
+	chosenSource := p.ID()
+
+	// Build merged template list: per-source templates first, then global ones
+	// (global templates with same Title as a per-source one are skipped).
+	sourceTemplates := []config.Template{}
+	for _, s := range cfg.Sources {
+		if s.ID == chosenSource {
+			sourceTemplates = s.Templates
+			break
+		}
+	}
+	templates := append([]config.Template{}, sourceTemplates...)
+	seen := map[string]bool{}
+	for _, t := range sourceTemplates {
+		seen[t.Title] = true
+	}
+	for _, t := range cfg.Templates {
+		if !seen[t.Title] {
+			templates = append(templates, t)
+		}
 	}
 
 	// Validar índice
-	if templateGenerateIndex < 1 || templateGenerateIndex > len(cfg.Templates) {
-		return fmt.Errorf("índice fuera de rango: %d (debe estar entre 1 y %d)", templateGenerateIndex, len(cfg.Templates))
+	if templateGenerateIndex < 1 || templateGenerateIndex > len(templates) {
+		return fmt.Errorf("índice fuera de rango: %d (debe estar entre 1 y %d)", templateGenerateIndex, len(templates))
 	}
 
 	// Obtener plantilla
-	idx := templateGenerateIndex - 1
-	tmpl := cfg.Templates[idx]
+	tmpl := templates[templateGenerateIndex-1]
 
-	// Determinar el proyecto a usar
-	proj := projectID
-	if proj == "" {
-		proj = cfg.ProjectID
+	// Determine ProjectID from source config (only populated for GSM sources).
+	projectIDVal := ""
+	for _, sc := range cfg.Sources {
+		if sc.ID == chosenSource && sc.Provider == "gsm" {
+			projectIDVal = sc.ProjectID
+			break
+		}
 	}
-	if proj == "" {
-		return fmt.Errorf("no se especificó project ID. Usa --project o configura un proyecto por defecto")
-	}
-
-	// Crear cliente GCP (para obtener información del secreto)
-	client, err := gcp.NewClient(ctx, proj)
-	if err != nil {
-		return fmt.Errorf("error creando cliente GCP: %w", err)
-	}
-	defer func() { _ = client.Close() }()
 
 	// Preparar datos para la plantilla
 	data := struct {
 		SecretName     string
 		FullSecretName string
 		ProjectID      string
+		SourceID       string
+		Provider       string
 	}{
-		SecretName:     extractSecretName(secretName, cfg.FolderSeparator),
+		SecretName:     extractSecretName(secretName, p.FolderSeparator()),
 		FullSecretName: secretName,
-		ProjectID:      proj,
+		ProjectID:      projectIDVal,
+		SourceID:       chosenSource,
+		Provider:       p.Kind(),
 	}
 
 	// Parsear y ejecutar plantilla

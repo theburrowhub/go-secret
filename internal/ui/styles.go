@@ -1,6 +1,8 @@
 package ui
 
-import "github.com/charmbracelet/lipgloss"
+import (
+	"github.com/charmbracelet/lipgloss"
+)
 
 // Color palette - Darcula theme (JetBrains inspired)
 var (
@@ -217,5 +219,18 @@ func NewStyles() *Styles {
 			Padding(1, 2).
 			BorderStyle(lipgloss.RoundedBorder()).
 			BorderForeground(ColorBorder),
+	}
+}
+
+// ProviderBadge returns a color-coded style for a given provider kind or source ID.
+// It accepts either a kind ("gsm", "vault") or a source ID prefix.
+func (s *Styles) ProviderBadge(kindOrID string) lipgloss.Style {
+	switch {
+	case kindOrID == "gsm" || len(kindOrID) >= 3 && kindOrID[:3] == "gsm":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("#4285F4")).Bold(true)
+	case kindOrID == "vault" || len(kindOrID) >= 5 && kindOrID[:5] == "vault":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("#FFD814")).Bold(true)
+	default:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("#888888"))
 	}
 }

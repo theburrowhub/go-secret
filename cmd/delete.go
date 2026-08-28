@@ -3,14 +3,14 @@ package cmd
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/theburrowhub/go-secret/internal/audit"
-	"github.com/theburrowhub/go-secret/internal/config"
-	"github.com/theburrowhub/go-secret/internal/gcp"
+	"github.com/theburrowhub/go-secret/internal/sources"
 )
 
 var (
@@ -46,22 +46,7 @@ func init() {
 func runDelete(secretName string) error {
 	ctx := context.Background()
 
-	// Cargar configuración
-	cfg, err := config.Load()
-	if err != nil {
-		return fmt.Errorf("error cargando configuración: %w", err)
-	}
-
-	// Determinar el proyecto a usar
-	proj := projectID
-	if proj == "" {
-		proj = cfg.ProjectID
-	}
-	if proj == "" {
-		return fmt.Errorf("no se especificó project ID. Usa --project o configura un proyecto por defecto")
-	}
-
-	// Confirmar eliminación si no se usa --force
+	// Confirmar eliminación si no se usa --force (before loading registry for UX)
 	if !deleteForce {
 		fmt.Printf("⚠️  Estás a punto de eliminar el secreto: %s\n", secretName)
 		fmt.Println("Esta acción NO SE PUEDE DESHACER. Todas las versiones serán destruidas.")
@@ -80,15 +65,22 @@ func runDelete(secretName string) error {
 		}
 	}
 
-	// Crear cliente GCP
-	client, err := gcp.NewClient(ctx, proj)
+	cfg, reg, uc, err := loadRegistry(ctx)
 	if err != nil {
-		return fmt.Errorf("error creando cliente GCP: %w", err)
+		return err
 	}
-	defer func() { _ = client.Close() }()
+	defer func() { _ = reg.Close() }()
+
+	p, err := uc.Resolve(ctx, secretName, sourceID)
+	if err != nil {
+		if errors.Is(err, sources.ErrAmbiguousSecret) {
+			return fmt.Errorf("%w. Use --source <id>", err)
+		}
+		return err
+	}
 
 	// Eliminar el secreto
-	if err := client.DeleteSecret(ctx, secretName); err != nil {
+	if err := p.Delete(ctx, secretName); err != nil {
 		// Registrar error en audit log
 		if cfg.Audit.Enabled {
 			auditCfg := audit.Config{
@@ -100,8 +92,9 @@ func runDelete(secretName string) error {
 			auditLogger, _ := audit.NewLogger(auditCfg)
 			if auditLogger != nil {
 				defer func() { _ = auditLogger.Close() }()
-				auditLogger.SetUser(client.UserEmail())
-				auditLogger.LogSecretDelete(proj, secretName, audit.ResultFailure, err.Error())
+				auditLogger.SetUser(p.UserEmail())
+				auditLogger.SetSource(p.ID(), p.Kind())
+				auditLogger.LogSecretDelete(p.ID(), secretName, audit.ResultFailure, err.Error())
 			}
 		}
 		return fmt.Errorf("error eliminando secreto: %w", err)
@@ -118,8 +111,9 @@ func runDelete(secretName string) error {
 		auditLogger, err := audit.NewLogger(auditCfg)
 		if err == nil {
 			defer func() { _ = auditLogger.Close() }()
-			auditLogger.SetUser(client.UserEmail())
-			auditLogger.LogSecretDelete(proj, secretName, audit.ResultSuccess, "")
+			auditLogger.SetUser(p.UserEmail())
+			auditLogger.SetSource(p.ID(), p.Kind())
+			auditLogger.LogSecretDelete(p.ID(), secretName, audit.ResultSuccess, "")
 		}
 	}
 

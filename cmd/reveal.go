@@ -2,12 +2,12 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/spf13/cobra"
 	"github.com/theburrowhub/go-secret/internal/audit"
-	"github.com/theburrowhub/go-secret/internal/config"
-	"github.com/theburrowhub/go-secret/internal/gcp"
+	"github.com/theburrowhub/go-secret/internal/sources"
 )
 
 var (
@@ -43,30 +43,22 @@ func init() {
 func runReveal(secretName string) error {
 	ctx := context.Background()
 
-	// Cargar configuración
-	cfg, err := config.Load()
+	cfg, reg, uc, err := loadRegistry(ctx)
 	if err != nil {
-		return fmt.Errorf("error cargando configuración: %w", err)
+		return err
 	}
+	defer func() { _ = reg.Close() }()
 
-	// Determinar el proyecto a usar
-	proj := projectID
-	if proj == "" {
-		proj = cfg.ProjectID
-	}
-	if proj == "" {
-		return fmt.Errorf("no se especificó project ID. Usa --project o configura un proyecto por defecto")
-	}
-
-	// Crear cliente GCP
-	client, err := gcp.NewClient(ctx, proj)
+	p, err := uc.Resolve(ctx, secretName, sourceID)
 	if err != nil {
-		return fmt.Errorf("error creando cliente GCP: %w", err)
+		if errors.Is(err, sources.ErrAmbiguousSecret) {
+			return fmt.Errorf("%w. Use --source <id>", err)
+		}
+		return err
 	}
-	defer func() { _ = client.Close() }()
 
 	// Acceder al valor del secreto
-	payload, err := client.AccessSecretVersion(ctx, secretName, revealVersion)
+	payload, err := p.Reveal(ctx, secretName, revealVersion)
 	if err != nil {
 		// Registrar error en audit log
 		if cfg.Audit.Enabled {
@@ -79,8 +71,9 @@ func runReveal(secretName string) error {
 			auditLogger, _ := audit.NewLogger(auditCfg)
 			if auditLogger != nil {
 				defer func() { _ = auditLogger.Close() }()
-				auditLogger.SetUser(client.UserEmail())
-				auditLogger.LogSecretReveal(proj, secretName, revealVersion, audit.ResultFailure, err.Error())
+				auditLogger.SetUser(p.UserEmail())
+				auditLogger.SetSource(p.ID(), p.Kind())
+				auditLogger.LogSecretReveal(p.ID(), secretName, revealVersion, audit.ResultFailure, err.Error())
 			}
 		}
 		return fmt.Errorf("error accediendo al secreto: %w", err)
@@ -97,8 +90,9 @@ func runReveal(secretName string) error {
 		auditLogger, err := audit.NewLogger(auditCfg)
 		if err == nil {
 			defer func() { _ = auditLogger.Close() }()
-			auditLogger.SetUser(client.UserEmail())
-			auditLogger.LogSecretReveal(proj, secretName, revealVersion, audit.ResultSuccess, "")
+			auditLogger.SetUser(p.UserEmail())
+			auditLogger.SetSource(p.ID(), p.Kind())
+			auditLogger.LogSecretReveal(p.ID(), secretName, revealVersion, audit.ResultSuccess, "")
 		}
 	}
 

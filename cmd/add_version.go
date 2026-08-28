@@ -3,6 +3,7 @@ package cmd
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -10,8 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/theburrowhub/go-secret/internal/audit"
-	"github.com/theburrowhub/go-secret/internal/config"
-	"github.com/theburrowhub/go-secret/internal/gcp"
+	"github.com/theburrowhub/go-secret/internal/sources"
 	"golang.org/x/term"
 )
 
@@ -52,21 +52,6 @@ func init() {
 
 func runAddVersion(secretName string) error {
 	ctx := context.Background()
-
-	// Cargar configuración
-	cfg, err := config.Load()
-	if err != nil {
-		return fmt.Errorf("error cargando configuración: %w", err)
-	}
-
-	// Determinar el proyecto a usar
-	proj := projectID
-	if proj == "" {
-		proj = cfg.ProjectID
-	}
-	if proj == "" {
-		return fmt.Errorf("no se especificó project ID. Usa --project o configura un proyecto por defecto")
-	}
 
 	// Obtener el valor de la nueva versión
 	var value []byte
@@ -110,15 +95,22 @@ func runAddVersion(secretName string) error {
 		return fmt.Errorf("el valor de la versión no puede estar vacío")
 	}
 
-	// Crear cliente GCP
-	client, err := gcp.NewClient(ctx, proj)
+	cfg, reg, uc, err := loadRegistry(ctx)
 	if err != nil {
-		return fmt.Errorf("error creando cliente GCP: %w", err)
+		return err
 	}
-	defer func() { _ = client.Close() }()
+	defer func() { _ = reg.Close() }()
+
+	p, err := uc.Resolve(ctx, secretName, sourceID)
+	if err != nil {
+		if errors.Is(err, sources.ErrAmbiguousSecret) {
+			return fmt.Errorf("%w. Use --source <id>", err)
+		}
+		return err
+	}
 
 	// Añadir la nueva versión
-	version, err := client.AddSecretVersion(ctx, secretName, value)
+	version, err := p.AddVersion(ctx, secretName, value)
 	if err != nil {
 		// Registrar error en audit log
 		if cfg.Audit.Enabled {
@@ -131,8 +123,9 @@ func runAddVersion(secretName string) error {
 			auditLogger, _ := audit.NewLogger(auditCfg)
 			if auditLogger != nil {
 				defer func() { _ = auditLogger.Close() }()
-				auditLogger.SetUser(client.UserEmail())
-				auditLogger.LogVersionAdd(proj, secretName, "", audit.ResultFailure, err.Error())
+				auditLogger.SetUser(p.UserEmail())
+				auditLogger.SetSource(p.ID(), p.Kind())
+				auditLogger.LogVersionAdd(p.ID(), secretName, "", audit.ResultFailure, err.Error())
 			}
 		}
 		return fmt.Errorf("error añadiendo versión: %w", err)
@@ -149,8 +142,9 @@ func runAddVersion(secretName string) error {
 		auditLogger, err := audit.NewLogger(auditCfg)
 		if err == nil {
 			defer func() { _ = auditLogger.Close() }()
-			auditLogger.SetUser(client.UserEmail())
-			auditLogger.LogVersionAdd(proj, secretName, version.Name, audit.ResultSuccess, "")
+			auditLogger.SetUser(p.UserEmail())
+			auditLogger.SetSource(p.ID(), p.Kind())
+			auditLogger.LogVersionAdd(p.ID(), secretName, version.Name, audit.ResultSuccess, "")
 		}
 	}
 

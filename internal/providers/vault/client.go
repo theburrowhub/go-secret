@@ -1,0 +1,248 @@
+// internal/providers/vault/client.go
+package vault
+
+import (
+	"context"
+	"fmt"
+
+	vaultapi "github.com/hashicorp/vault/api"
+	"github.com/theburrowhub/go-secret/internal/config"
+	"github.com/theburrowhub/go-secret/internal/sources"
+)
+
+// Client is the Vault sources.Provider implementation. Supports KV v1 and v2,
+// possibly multiple mounts within the same source.
+type Client struct {
+	id              string
+	displayName     string
+	folderSeparator string
+	api             *vaultapi.Client
+	mounts          []mountInfo
+}
+
+type mountInfo struct {
+	Path    string
+	Version int // 1 or 2
+}
+
+// NewFromSourceConfig instantiates a Vault Client from a SourceConfig.
+// Authentication happens here; the returned Client carries the Vault token
+// in the api client.
+func NewFromSourceConfig(ctx context.Context, sc config.SourceConfig) (*Client, error) {
+	if sc.Address == "" {
+		return nil, fmt.Errorf("vault source %q missing address", sc.ID)
+	}
+	cfg := vaultapi.DefaultConfig()
+	cfg.Address = sc.Address
+	api, err := vaultapi.NewClient(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("vault client: %w", err)
+	}
+	tok, err := resolveAuth(ctx, sc)
+	if err != nil {
+		return nil, err
+	}
+	api.SetToken(tok)
+
+	c := &Client{
+		id:              sc.ID,
+		displayName:     sc.DisplayName,
+		folderSeparator: sc.FolderSeparator,
+		api:             api,
+	}
+	if c.folderSeparator == "" {
+		c.folderSeparator = "/"
+	}
+	for _, m := range sc.Mounts {
+		c.mounts = append(c.mounts, mountInfo{Path: m.Path, Version: m.Version})
+	}
+	if len(c.mounts) == 0 {
+		return nil, fmt.Errorf("vault source %q has no mounts configured", sc.ID)
+	}
+	return c, nil
+}
+
+// ID implements sources.Provider.
+func (c *Client) ID() string { return c.id }
+
+// Kind implements sources.Provider.
+func (c *Client) Kind() string { return "vault" }
+
+// DisplayName implements sources.Provider.
+func (c *Client) DisplayName() string {
+	if c.displayName != "" {
+		return c.displayName
+	}
+	return c.id
+}
+
+// FolderSeparator implements sources.Provider.
+func (c *Client) FolderSeparator() string { return c.folderSeparator }
+
+// UserEmail implements sources.Provider. Populated in Task 15 for OIDC.
+func (c *Client) UserEmail() string { return "" }
+
+// Close implements sources.Provider.
+func (c *Client) Close() error { return nil }
+
+// Capabilities implements sources.Provider.
+func (c *Client) Capabilities() sources.Capabilities {
+	supportsVersions := false
+	for _, m := range c.mounts {
+		if m.Version == 2 {
+			supportsVersions = true
+			break
+		}
+	}
+	return sources.Capabilities{
+		SupportsVersions: supportsVersions,
+		SupportsLabels:   true,
+	}
+}
+
+// List implements sources.Provider. Dispatches to KV v1 or v2 per mount.
+func (c *Client) List(ctx context.Context) ([]sources.Secret, error) {
+	out := []sources.Secret{}
+	for _, m := range c.mounts {
+		var (
+			items []sources.Secret
+			err   error
+		)
+		switch m.Version {
+		case 2, 0: // 0 = auto-detect, default to v2
+			items, err = c.listKV2(ctx, m)
+		case 1:
+			items, err = c.listKV1(ctx, m) // implemented in Task 13
+		default:
+			err = fmt.Errorf("mount %q has unsupported version %d", m.Path, m.Version)
+		}
+		if err != nil {
+			return out, fmt.Errorf("mount %q: %w", m.Path, err)
+		}
+		out = append(out, items...)
+	}
+	return out, nil
+}
+
+// Get implements sources.Provider. Dispatches to KV v1 or v2.
+func (c *Client) Get(ctx context.Context, name string) (*sources.Secret, error) {
+	m, rel, err := c.resolveMount(name)
+	if err != nil {
+		return nil, err
+	}
+	if m.Version == 1 {
+		return c.getKV1(ctx, m, rel)
+	}
+	return c.getKV2(ctx, m, rel)
+}
+
+// Reveal implements sources.Provider. Dispatches to KV v1 or v2.
+func (c *Client) Reveal(ctx context.Context, name, version string) ([]byte, error) {
+	m, rel, err := c.resolveMount(name)
+	if err != nil {
+		return nil, err
+	}
+	if m.Version == 1 {
+		if version != "" && version != "latest" {
+			return nil, sources.WrapNotSupported("Vault KV v1 has no versions")
+		}
+		return c.revealKV1(ctx, m, rel)
+	}
+	return c.revealKV2(ctx, m, rel, version)
+}
+
+// ListVersions implements sources.Provider. KV v2 only.
+func (c *Client) ListVersions(ctx context.Context, name string) ([]sources.Version, error) {
+	m, rel, err := c.resolveMount(name)
+	if err != nil {
+		return nil, err
+	}
+	if m.Version == 1 {
+		return nil, sources.WrapNotSupported("Vault KV v1 has no versions")
+	}
+	return c.listVersionsKV2(ctx, m, rel)
+}
+
+// Create implements sources.Provider.
+func (c *Client) Create(ctx context.Context, name string, value []byte, opts sources.CreateOpts) error {
+	m, rel, err := c.resolveMount(name)
+	if err != nil {
+		return err
+	}
+	if m.Version == 1 {
+		return c.writeKV1(ctx, m, rel, value)
+	}
+	_, err = c.writeKV2(ctx, m, rel, value)
+	return err
+}
+
+// Delete implements sources.Provider.
+func (c *Client) Delete(ctx context.Context, name string) error {
+	m, rel, err := c.resolveMount(name)
+	if err != nil {
+		return err
+	}
+	if m.Version == 1 {
+		return c.deleteKV1(ctx, m, rel)
+	}
+	return c.deleteKV2(ctx, m, rel)
+}
+
+// AddVersion implements sources.Provider.
+func (c *Client) AddVersion(ctx context.Context, name string, value []byte) (*sources.Version, error) {
+	m, rel, err := c.resolveMount(name)
+	if err != nil {
+		return nil, err
+	}
+	if m.Version == 1 {
+		// KV v1: overwriting is the only "add version" semantic.
+		if err := c.writeKV1(ctx, m, rel, value); err != nil {
+			return nil, err
+		}
+		return &sources.Version{Name: "1", State: "ENABLED"}, nil
+	}
+	v, err := c.writeKV2(ctx, m, rel, value)
+	if err != nil {
+		return nil, err
+	}
+	return &sources.Version{Name: v, State: "ENABLED"}, nil
+}
+
+// EnableVersion implements sources.Provider. Requires KV v2.
+func (c *Client) EnableVersion(ctx context.Context, name, version string) error {
+	m, rel, err := c.resolveMount(name)
+	if err != nil {
+		return err
+	}
+	if m.Version == 1 {
+		return sources.WrapNotSupported("KV v1 has no versions")
+	}
+	return c.versionOpKV2(ctx, m, rel, version, "undelete")
+}
+
+// DisableVersion implements sources.Provider. Requires KV v2.
+func (c *Client) DisableVersion(ctx context.Context, name, version string) error {
+	m, rel, err := c.resolveMount(name)
+	if err != nil {
+		return err
+	}
+	if m.Version == 1 {
+		return sources.WrapNotSupported("KV v1 has no versions")
+	}
+	return c.versionOpKV2(ctx, m, rel, version, "delete")
+}
+
+// DestroyVersion implements sources.Provider. Requires KV v2.
+func (c *Client) DestroyVersion(ctx context.Context, name, version string) error {
+	m, rel, err := c.resolveMount(name)
+	if err != nil {
+		return err
+	}
+	if m.Version == 1 {
+		return sources.WrapNotSupported("KV v1 has no versions")
+	}
+	return c.versionOpKV2(ctx, m, rel, version, "destroy")
+}
+
+// Compile-time assertion that *Client satisfies sources.Provider.
+var _ sources.Provider = (*Client)(nil)

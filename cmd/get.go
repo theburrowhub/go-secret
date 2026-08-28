@@ -2,14 +2,14 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 	"github.com/theburrowhub/go-secret/internal/audit"
-	"github.com/theburrowhub/go-secret/internal/config"
-	"github.com/theburrowhub/go-secret/internal/gcp"
+	"github.com/theburrowhub/go-secret/internal/sources"
 )
 
 var (
@@ -44,38 +44,30 @@ func init() {
 func runGet(secretName string) error {
 	ctx := context.Background()
 
-	// Cargar configuración
-	cfg, err := config.Load()
+	cfg, reg, uc, err := loadRegistry(ctx)
 	if err != nil {
-		return fmt.Errorf("error cargando configuración: %w", err)
+		return err
 	}
+	defer func() { _ = reg.Close() }()
 
-	// Determinar el proyecto a usar
-	proj := projectID
-	if proj == "" {
-		proj = cfg.ProjectID
-	}
-	if proj == "" {
-		return fmt.Errorf("no se especificó project ID. Usa --project o configura un proyecto por defecto")
-	}
-
-	// Crear cliente GCP
-	client, err := gcp.NewClient(ctx, proj)
+	p, err := uc.Resolve(ctx, secretName, sourceID)
 	if err != nil {
-		return fmt.Errorf("error creando cliente GCP: %w", err)
+		if errors.Is(err, sources.ErrAmbiguousSecret) {
+			return fmt.Errorf("%w. Use --source <id>", err)
+		}
+		return err
 	}
-	defer func() { _ = client.Close() }()
 
 	// Obtener secreto
-	secret, err := client.GetSecret(ctx, secretName)
+	secret, err := p.Get(ctx, secretName)
 	if err != nil {
 		return fmt.Errorf("error obteniendo secreto: %w", err)
 	}
 
 	// Obtener versiones si se solicitó
-	var versions []gcp.SecretVersion
+	var versions []sources.Version
 	if getVersions {
-		versions, err = client.ListSecretVersions(ctx, secretName)
+		versions, err = p.ListVersions(ctx, secretName)
 		if err != nil {
 			return fmt.Errorf("error listando versiones: %w", err)
 		}
@@ -92,8 +84,9 @@ func runGet(secretName string) error {
 		auditLogger, err := audit.NewLogger(auditCfg)
 		if err == nil {
 			defer func() { _ = auditLogger.Close() }()
-			auditLogger.SetUser(client.UserEmail())
-			auditLogger.LogSecretAccess(proj, secretName, "", audit.ResultSuccess, "")
+			auditLogger.SetUser(p.UserEmail())
+			auditLogger.SetSource(p.ID(), p.Kind())
+			auditLogger.LogSecretAccess(p.ID(), secretName, "", audit.ResultSuccess, "")
 		}
 	}
 
@@ -108,13 +101,13 @@ func runGet(secretName string) error {
 	}
 }
 
-func outputGetTable(secret *gcp.Secret, versions []gcp.SecretVersion) error {
+func outputGetTable(secret *sources.Secret, versions []sources.Version) error {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
 
 	_, _ = fmt.Fprintln(w, "CAMPO\tVALOR")
 	_, _ = fmt.Fprintln(w, "-----\t-----")
 	_, _ = fmt.Fprintf(w, "Nombre\t%s\n", secret.Name)
-	_, _ = fmt.Fprintf(w, "Nombre completo\t%s\n", secret.FullName)
+	_, _ = fmt.Fprintf(w, "Fuente\t%s\n", secret.SourceID)
 	_, _ = fmt.Fprintf(w, "Creado\t%s\n", secret.CreateTime)
 	_, _ = fmt.Fprintf(w, "Replicación\t%s\n", secret.Replication)
 
@@ -144,11 +137,11 @@ func outputGetTable(secret *gcp.Secret, versions []gcp.SecretVersion) error {
 			state := v.State
 			// Formatear estado para mejor legibilidad
 			switch v.State {
-			case "STATE_ENABLED":
+			case "STATE_ENABLED", "ENABLED":
 				state = "✓ ENABLED"
-			case "STATE_DISABLED":
+			case "STATE_DISABLED", "DISABLED":
 				state = "○ DISABLED"
-			case "STATE_DESTROYED":
+			case "STATE_DESTROYED", "DESTROYED":
 				state = "✕ DESTROYED"
 			}
 			_, _ = fmt.Fprintf(w, "%s\t%s\t%s\n", v.Name, state, v.CreateTime)
@@ -160,10 +153,10 @@ func outputGetTable(secret *gcp.Secret, versions []gcp.SecretVersion) error {
 	return nil
 }
 
-func outputGetJSON(secret *gcp.Secret, versions []gcp.SecretVersion) error {
+func outputGetJSON(secret *sources.Secret, versions []sources.Version) error {
 	fmt.Printf("{\n")
 	fmt.Printf("  \"name\": \"%s\",\n", secret.Name)
-	fmt.Printf("  \"full_name\": \"%s\",\n", secret.FullName)
+	fmt.Printf("  \"source_id\": \"%s\",\n", secret.SourceID)
 	fmt.Printf("  \"created\": \"%s\",\n", secret.CreateTime)
 	fmt.Printf("  \"replication\": \"%s\"", secret.Replication)
 
@@ -198,9 +191,9 @@ func outputGetJSON(secret *gcp.Secret, versions []gcp.SecretVersion) error {
 	return nil
 }
 
-func outputGetYAML(secret *gcp.Secret, versions []gcp.SecretVersion) error {
+func outputGetYAML(secret *sources.Secret, versions []sources.Version) error {
 	fmt.Printf("name: %s\n", secret.Name)
-	fmt.Printf("full_name: %s\n", secret.FullName)
+	fmt.Printf("source_id: %s\n", secret.SourceID)
 	fmt.Printf("created: %s\n", secret.CreateTime)
 	fmt.Printf("replication: %s\n", secret.Replication)
 

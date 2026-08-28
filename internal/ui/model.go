@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"text/template"
@@ -17,7 +19,8 @@ import (
 	"github.com/theburrowhub/go-secret/internal/audit"
 	"github.com/theburrowhub/go-secret/internal/clipboard"
 	"github.com/theburrowhub/go-secret/internal/config"
-	"github.com/theburrowhub/go-secret/internal/gcp"
+	"github.com/theburrowhub/go-secret/internal/providers/vault"
+	"github.com/theburrowhub/go-secret/internal/sources"
 )
 
 // View represents the current view state
@@ -43,6 +46,11 @@ const (
 	ViewReveal
 	ViewProjectSwitch
 	ViewLocked
+	ViewSourcesPicker
+	ViewCreateSourcePicker
+	ViewSourcesEditor
+	ViewSourceForm
+	ViewSourceLoginPrompt
 )
 
 // FolderItem represents either a folder or a secret in the tree view
@@ -50,20 +58,33 @@ type FolderItem struct {
 	Name       string
 	FullPath   string
 	IsFolder   bool
-	Secret     *gcp.Secret
+	Secret     *sources.Secret
 	Children   map[string]*FolderItem
 	Depth      int
+}
+
+// sourceFormState holds form state for add/edit source.
+type sourceFormState struct {
+	mode            string // "add" | "edit"
+	originalID      string // for edit: which entry to replace
+	sc              config.SourceConfig
+	cursor          int // current field index
+	editingMount    int // -1 = not editing a mount; >=0 = mount index
+	editingSubfield int // 0 = path, 1 = version
+	errMsg          string
+	inputs          []textinput.Model // per-field text inputs
 }
 
 // Model is the main application model
 type Model struct {
 	// Config
 	config *config.Config
-	
-	// GCP client
-	client *gcp.Client
-	ctx    context.Context
-	
+
+	// Multi-source registry and unified client
+	registry *sources.Registry
+	unified  *sources.UnifiedClient
+	ctx      context.Context
+
 	// UI state
 	view           View
 	previousView   View
@@ -71,9 +92,11 @@ type Model struct {
 	height         int
 	styles         *Styles
 	keys           KeyMap
-	
+
 	// List view state
-	secrets        []gcp.Secret
+	allSecrets   []sources.Secret // unfiltered
+	secrets      []sources.Secret // filtered by sourceFilter
+	sourceFilter string           // "" = ALL, otherwise = source ID
 	folderTree     *FolderItem
 	currentPath    []string
 	displayItems   []*FolderItem
@@ -81,13 +104,26 @@ type Model struct {
 	listOffset     int
 	filterText     string
 	filterInput    textinput.Model
-	
+
 	// Detail view state
-	selectedSecret *gcp.Secret
-	versions       []gcp.SecretVersion
+	selectedSecret *sources.Secret
+	versions       []sources.Version
 	versionCursor  int
 	revealedValue  []byte // Stored as []byte for secure memory handling
 	revealVersion  string
+
+	// Sources picker state (Task 26)
+	sourcesPickerCursor int
+
+	// Sources editor state
+	sourcesEditorCursor int
+	sourceForm          sourceFormState
+	sourceLoginInput    textinput.Model
+	sourceLoginSourceID string // source being logged-in to
+
+	// Create source picker state (Task 27)
+	createSourceID     string
+	createSourceCursor int
 	
 	// Create view state
 	createInputs       []textinput.Model
@@ -163,12 +199,12 @@ type Model struct {
 
 // Messages
 type secretsLoadedMsg struct {
-	secrets []gcp.Secret
+	secrets []sources.Secret
 	err     error
 }
 
 type versionsLoadedMsg struct {
-	versions []gcp.SecretVersion
+	versions []sources.Version
 	err      error
 }
 
@@ -183,7 +219,7 @@ type secretDeletedMsg struct {
 }
 
 type versionAddedMsg struct {
-	version *gcp.SecretVersion
+	version *sources.Version
 	err     error
 }
 
@@ -200,9 +236,11 @@ type secretCopiedMsg struct {
 	err        error
 }
 
-type clientInitializedMsg struct {
-	client *gcp.Client
-	err    error
+type registryInitializedMsg struct {
+	registry *sources.Registry
+	unified  *sources.UnifiedClient
+	userEmail string
+	err      error
 }
 
 type clipboardClearMsg struct{}
@@ -276,6 +314,7 @@ func NewModel(cfg *config.Config, projectID string) Model {
 		"📝 Code Templates",
 		"🕐 Recent Projects",
 		"🔒 Security Settings",
+		"🔌 Sources",
 		"💾 Save & Exit",
 	}
 	
@@ -283,16 +322,19 @@ func NewModel(cfg *config.Config, projectID string) Model {
 	projectSwitchInput := textinput.New()
 	projectSwitchInput.Placeholder = "Enter project ID or select from list..."
 	projectSwitchInput.CharLimit = 100
+
+	// Source login input (for approle secret_id prompt)
+	sourceLoginInput := textinput.New()
+	sourceLoginInput.Placeholder = "secret_id"
+	sourceLoginInput.CharLimit = 256
+	sourceLoginInput.EchoMode = textinput.EchoPassword
 	
-	// Determine initial view
+	// Determine initial view - with sources we always start in ViewList (or prompt)
 	initialView := ViewList
-	if projectID == "" && cfg.ProjectID == "" {
-		initialView = ViewProjectPrompt
-		configInputs[0].Focus()
-	} else if projectID != "" {
+	if projectID != "" {
 		cfg.ProjectID = projectID
 	}
-	
+
 	// Initialize audit logger
 	auditCfg := audit.Config{
 		Enabled:    cfg.Audit.Enabled,
@@ -301,7 +343,7 @@ func NewModel(cfg *config.Config, projectID string) Model {
 		MaxAgeDays: cfg.Audit.MaxAgeDays,
 	}
 	auditLogger, _ := audit.NewLogger(auditCfg)
-	
+
 	return Model{
 		config:             cfg,
 		ctx:                context.Background(),
@@ -320,10 +362,11 @@ func NewModel(cfg *config.Config, projectID string) Model {
 		templateCodeArea:   templateCodeArea,
 		configMenuItems:    configMenuItems,
 		projectSwitchInput: projectSwitchInput,
+		sourceLoginInput:   sourceLoginInput,
 		folderTree:         &FolderItem{Children: make(map[string]*FolderItem)},
 		currentPath:        []string{},
-		loading:            initialView == ViewList,
-		loadingMsg:         "Loading secrets...",
+		loading:            true,
+		loadingMsg:         "Initializing sources...",
 		auditLogger:        auditLogger,
 		lastActivity:       time.Now(),
 	}
@@ -332,78 +375,142 @@ func NewModel(cfg *config.Config, projectID string) Model {
 // Init initializes the model
 func (m Model) Init() tea.Cmd {
 	cmds := []tea.Cmd{sessionTimeoutTickCmd()}
-	
-	if m.view == ViewProjectPrompt {
-		cmds = append(cmds, textinput.Blink)
-	} else {
-		cmds = append(cmds, m.initializeClient())
-	}
-	
+	cmds = append(cmds, m.initializeRegistry())
 	return tea.Batch(cmds...)
 }
 
-func (m Model) initializeClient() tea.Cmd {
+func (m Model) initializeRegistry() tea.Cmd {
 	return func() tea.Msg {
-		client, err := gcp.NewClient(m.ctx, m.config.ProjectID)
+		reg, err := sources.LoadFromConfig(context.Background(), m.config)
 		if err != nil {
-			return clientInitializedMsg{err: err}
+			return registryInitializedMsg{err: err}
 		}
-		return clientInitializedMsg{client: client}
+		unified := sources.NewUnifiedClient(reg)
+		// Try to get user email from first active provider
+		userEmail := ""
+		for _, p := range reg.Active() {
+			userEmail = p.UserEmail()
+			if userEmail != "" {
+				break
+			}
+		}
+		return registryInitializedMsg{
+			registry:  reg,
+			unified:   unified,
+			userEmail: userEmail,
+		}
 	}
 }
 
 func (m Model) loadSecrets() tea.Cmd {
 	return func() tea.Msg {
-		secrets, err := m.client.ListSecrets(m.ctx)
-		return secretsLoadedMsg{secrets: secrets, err: err}
+		if m.unified == nil {
+			return secretsLoadedMsg{err: fmt.Errorf("no sources configured")}
+		}
+		secrets, err := m.unified.List(m.ctx)
+		// PartialError is OK - we still have results
+		if err != nil {
+			var partial *sources.PartialError
+			if !isPartialError(err, &partial) {
+				return secretsLoadedMsg{secrets: secrets, err: err}
+			}
+			// Surface partial error as status but still return secrets
+			return secretsLoadedMsg{secrets: secrets, err: err}
+		}
+		return secretsLoadedMsg{secrets: secrets, err: nil}
 	}
+}
+
+// isPartialError checks whether err is a *sources.PartialError.
+func isPartialError(err error, out **sources.PartialError) bool {
+	if pe, ok := err.(*sources.PartialError); ok {
+		if out != nil {
+			*out = pe
+		}
+		return true
+	}
+	return false
 }
 
 func (m Model) loadVersions(secretName string) tea.Cmd {
 	return func() tea.Msg {
-		versions, err := m.client.ListSecretVersions(m.ctx, secretName)
+		if m.selectedSecret == nil {
+			return versionsLoadedMsg{err: fmt.Errorf("no secret selected")}
+		}
+		p, err := m.registry.Get(m.selectedSecret.SourceID)
+		if err != nil {
+			return versionsLoadedMsg{err: err}
+		}
+		versions, err := p.ListVersions(m.ctx, secretName)
 		return versionsLoadedMsg{versions: versions, err: err}
 	}
 }
 
 func (m Model) accessSecretVersion(secretName, version string) tea.Cmd {
 	return func() tea.Msg {
-		value, err := m.client.AccessSecretVersion(m.ctx, secretName, version)
+		if m.selectedSecret == nil {
+			return secretValueMsg{secretName: secretName, version: version, err: fmt.Errorf("no secret selected")}
+		}
+		p, err := m.registry.Get(m.selectedSecret.SourceID)
+		if err != nil {
+			return secretValueMsg{secretName: secretName, version: version, err: err}
+		}
+		value, err := p.Reveal(m.ctx, secretName, version)
 		return secretValueMsg{secretName: secretName, value: value, version: version, err: err}
 	}
 }
 
 func (m Model) createSecret(name string, value []byte, location string) tea.Cmd {
+	sourceID := m.createSourceID
 	return func() tea.Msg {
-		err := m.client.CreateSecret(m.ctx, name, nil, location)
+		p, err := m.registry.Get(sourceID)
 		if err != nil {
-			return secretCreatedMsg{name: name, err: err}
+			return secretCreatedMsg{name: name, err: fmt.Errorf("source %q not found: %w", sourceID, err)}
 		}
-		
-		if len(value) > 0 {
-			_, err = m.client.AddSecretVersion(m.ctx, name, value)
-		}
+		opts := sources.CreateOpts{Location: location}
+		err = p.Create(m.ctx, name, value, opts)
 		return secretCreatedMsg{name: name, err: err}
 	}
 }
 
 func (m Model) deleteSecret(name string) tea.Cmd {
 	return func() tea.Msg {
-		err := m.client.DeleteSecret(m.ctx, name)
+		if m.selectedSecret == nil {
+			return secretDeletedMsg{name: name, err: fmt.Errorf("no secret selected")}
+		}
+		p, err := m.registry.Get(m.selectedSecret.SourceID)
+		if err != nil {
+			return secretDeletedMsg{name: name, err: err}
+		}
+		err = p.Delete(m.ctx, name)
 		return secretDeletedMsg{name: name, err: err}
 	}
 }
 
 func (m Model) addVersion(secretName string, value []byte) tea.Cmd {
 	return func() tea.Msg {
-		version, err := m.client.AddSecretVersion(m.ctx, secretName, value)
+		if m.selectedSecret == nil {
+			return versionAddedMsg{err: fmt.Errorf("no secret selected")}
+		}
+		p, err := m.registry.Get(m.selectedSecret.SourceID)
+		if err != nil {
+			return versionAddedMsg{err: err}
+		}
+		version, err := p.AddVersion(m.ctx, secretName, value)
 		return versionAddedMsg{version: version, err: err}
 	}
 }
 
 func (m Model) copySecretValue(secretName, version string) tea.Cmd {
 	return func() tea.Msg {
-		value, err := m.client.AccessSecretVersion(m.ctx, secretName, version)
+		if m.selectedSecret == nil {
+			return secretCopiedMsg{secretName: secretName, version: version, err: fmt.Errorf("no secret selected")}
+		}
+		p, err := m.registry.Get(m.selectedSecret.SourceID)
+		if err != nil {
+			return secretCopiedMsg{secretName: secretName, version: version, err: err}
+		}
+		value, err := p.Reveal(m.ctx, secretName, version)
 		if err != nil {
 			return secretCopiedMsg{secretName: secretName, version: version, err: err}
 		}
@@ -485,8 +592,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateLocked(msg)
 		}
 		
-		// Global project switch (Ctrl+P) - available from most views
-		if msg.String() == "ctrl+p" && m.view != ViewProjectPrompt && m.view != ViewProjectSwitch && m.view != ViewLocked {
+		// Ctrl+P opens sources picker (Task 26)
+		if msg.String() == "ctrl+p" && m.view != ViewProjectPrompt && m.view != ViewSourcesPicker && m.view != ViewLocked {
+			m.view = ViewSourcesPicker
+			m.sourcesPickerCursor = 0
+			return m, nil
+		}
+
+		// Ctrl+G = global project switch
+		if msg.String() == "ctrl+g" && m.view != ViewProjectPrompt && m.view != ViewProjectSwitch && m.view != ViewLocked {
 			m.projectSwitchPrevView = m.view
 			m.view = ViewProjectSwitch
 			m.projectSwitchCursor = 0
@@ -533,6 +647,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateProjectSwitch(msg)
 		case ViewLocked:
 			return m.updateLocked(msg)
+		case ViewSourcesPicker:
+			return m.updateSourcesPicker(msg)
+		case ViewCreateSourcePicker:
+			return m.updateCreateSourcePicker(msg)
+		case ViewSourcesEditor:
+			return m.updateSourcesEditor(msg)
+		case ViewSourceForm:
+			return m.updateSourceForm(msg)
+		case ViewSourceLoginPrompt:
+			return m.updateSourceLoginPrompt(msg)
 		}
 		
 	case tea.WindowSizeMsg:
@@ -540,17 +664,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.viewport = viewport.New(msg.Width, msg.Height-6)
 		
-	case clientInitializedMsg:
+	case registryInitializedMsg:
 		if msg.err != nil {
-			m.statusMsg = fmt.Sprintf("Error: %v", msg.err)
+			m.statusMsg = fmt.Sprintf("Error initializing sources: %v", msg.err)
 			m.statusErr = true
 			m.loading = false
 			return m, nil
 		}
-		m.client = msg.client
+		m.registry = msg.registry
+		m.unified = msg.unified
 		if m.auditLogger != nil {
-			// Set the authenticated user in audit logger
-			m.auditLogger.SetUser(msg.client.UserEmail())
+			if msg.userEmail != "" {
+				m.auditLogger.SetUser(msg.userEmail)
+			}
 			m.auditLogger.LogSessionStart(m.config.ProjectID)
 		}
 		m.loading = true
@@ -560,18 +686,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case secretsLoadedMsg:
 		m.loading = false
 		if msg.err != nil {
-			m.statusMsg = fmt.Sprintf("Error loading secrets: %v", msg.err)
-			m.statusErr = true
-			if m.auditLogger != nil {
-				m.auditLogger.LogSecretList(m.config.ProjectID, 0, audit.ResultFailure, msg.err.Error())
+			// For PartialError we still may have some secrets
+			var partial *sources.PartialError
+			if isPartialError(msg.err, &partial) && len(msg.secrets) > 0 {
+				m.statusMsg = fmt.Sprintf("Partial load (%d secrets, some sources failed)", len(msg.secrets))
+				m.statusErr = true
+			} else {
+				m.statusMsg = fmt.Sprintf("Error loading secrets: %v", msg.err)
+				m.statusErr = true
+				if m.auditLogger != nil {
+					m.auditLogger.LogSecretList(m.config.ProjectID, 0, audit.ResultFailure, msg.err.Error())
+				}
+				if len(msg.secrets) == 0 {
+					return m, nil
+				}
 			}
-			return m, nil
+		} else {
+			m.statusErr = false
 		}
-		m.secrets = msg.secrets
+		m.allSecrets = msg.secrets
+		m.refreshSecretsView()
 		m.buildFolderTree()
 		m.updateDisplayItems()
-		m.statusMsg = fmt.Sprintf("Loaded %d secrets", len(m.secrets))
-		m.statusErr = false
+		if !m.statusErr {
+			m.statusMsg = fmt.Sprintf("Loaded %d secrets", len(m.secrets))
+		}
 		if m.auditLogger != nil {
 			m.auditLogger.LogSecretList(m.config.ProjectID, len(m.secrets), audit.ResultSuccess, "")
 		}
@@ -749,8 +888,8 @@ func (m Model) updateProjectPrompt(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		_ = m.config.Save()
 		m.view = ViewList
 		m.loading = true
-		m.loadingMsg = "Connecting to GCP..."
-		return m, m.initializeClient()
+		m.loadingMsg = "Initializing sources..."
+		return m, m.initializeRegistry()
 	case "q":
 		return m, tea.Quit
 	}
@@ -833,19 +972,49 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.view = ViewFilter
 		m.filterInput.Focus()
 		return m, textinput.Blink
+	case "tab":
+		// Task 25: cycle source filter forward
+		m.sourceFilter = m.cycleSourceFilter(+1)
+		m.refreshSecretsView()
+		m.buildFolderTree()
+		m.updateDisplayItems()
+		return m, nil
+	case "shift+tab":
+		// Task 25: cycle source filter backward
+		m.sourceFilter = m.cycleSourceFilter(-1)
+		m.refreshSecretsView()
+		m.buildFolderTree()
+		m.updateDisplayItems()
+		return m, nil
 	case "n":
-		m.view = ViewCreate
+		// Task 27: show source picker if multiple active sources and no default
+		active := m.activeProviders()
+		switch {
+		case len(active) == 0:
+			m.statusMsg = "No active sources configured"
+			m.statusErr = true
+			return m, nil
+		case len(active) == 1:
+			m.createSourceID = active[0].ID()
+			m.view = ViewCreate
+		case m.config.DefaultSource != "":
+			m.createSourceID = m.config.DefaultSource
+			m.view = ViewCreate
+		default:
+			m.view = ViewCreateSourcePicker
+			m.createSourceCursor = 0
+			return m, nil
+		}
 		m.createInputs[0].SetValue(strings.Join(m.currentPath, m.config.FolderSeparator))
 		if len(m.currentPath) > 0 {
 			m.createInputs[0].SetValue(m.createInputs[0].Value() + m.config.FolderSeparator)
 		}
 		m.createInputs[0].Focus()
 		m.createFocus = 0
-		// Initialize location selector: default to first saved location if any, else global
 		if len(m.config.SecretLocations) > 0 {
-			m.createLocationIdx = 1 // First saved location
+			m.createLocationIdx = 1
 		} else {
-			m.createLocationIdx = 0 // Global
+			m.createLocationIdx = 0
 		}
 		m.createAddingLoc = false
 		m.createEditorMode = false
@@ -868,8 +1037,52 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "q":
 		return m, tea.Quit
 	}
-	
+
 	return m, nil
+}
+
+// activeProviders returns the currently active providers from the registry.
+func (m *Model) activeProviders() []sources.Provider {
+	if m.registry == nil {
+		return nil
+	}
+	return m.registry.Active()
+}
+
+// cycleSourceFilter cycles the source filter by dir (+1 or -1).
+func (m *Model) cycleSourceFilter(dir int) string {
+	if m.registry == nil {
+		return ""
+	}
+	active := m.registry.Active()
+	options := []string{""}
+	for _, p := range active {
+		options = append(options, p.ID())
+	}
+	idx := 0
+	for i, o := range options {
+		if o == m.sourceFilter {
+			idx = i
+			break
+		}
+	}
+	idx = (idx + dir + len(options)) % len(options)
+	return options[idx]
+}
+
+// refreshSecretsView filters allSecrets into secrets based on sourceFilter.
+func (m *Model) refreshSecretsView() {
+	if m.sourceFilter == "" {
+		m.secrets = m.allSecrets
+		return
+	}
+	filtered := make([]sources.Secret, 0, len(m.allSecrets))
+	for _, s := range m.allSecrets {
+		if s.SourceID == m.sourceFilter {
+			filtered = append(filtered, s)
+		}
+	}
+	m.secrets = filtered
 }
 
 func (m Model) updateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -1204,7 +1417,7 @@ func (m Model) updateGenerate(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.templateCursor--
 		}
 	case "down", "j":
-		if m.templateCursor < len(m.config.Templates)-1 {
+		if m.templateCursor < len(m.resolvedTemplates())-1 {
 			m.templateCursor++
 		}
 	case "enter":
@@ -1263,7 +1476,11 @@ func (m Model) updateConfigMenu(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case 3: // Security Settings
 			m.view = ViewConfigSecurity
 			m.securityCursor = 0
-		case 4: // Save & Exit
+		case 4: // Sources — full editor (Ctrl+P = quick picker, Settings = full editor)
+			m.view = ViewSourcesEditor
+			m.sourcesEditorCursor = 0
+			return m, nil
+		case 5: // Save & Exit
 			_ = m.config.Save()
 			m.statusMsg = "Configuration saved"
 			m.statusErr = false
@@ -1439,8 +1656,8 @@ func (m Model) updateConfigRecentProjects(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			_ = m.config.Save()
 			m.view = ViewList
 			m.loading = true
-			m.loadingMsg = "Connecting to GCP..."
-			return m, m.initializeClient()
+			m.loadingMsg = "Initializing sources..."
+			return m, m.initializeRegistry()
 		}
 	case "d":
 		if len(m.config.RecentProjects) > 0 && m.recentProjectsCursor < len(m.config.RecentProjects) {
@@ -1698,10 +1915,10 @@ func (m Model) updateProjectSwitch(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.statusErr = false
 			m.view = ViewList
 			m.loading = true
-			m.loadingMsg = "Connecting to GCP..."
+			m.loadingMsg = "Initializing sources..."
 			m.currentPath = []string{}
 			m.cursor = 0
-			return m, m.initializeClient()
+			return m, m.initializeRegistry()
 		} else if selectedProject == m.config.ProjectID {
 			m.statusMsg = "Already on this project"
 			m.statusErr = false
@@ -1738,6 +1955,88 @@ func (m Model) getFilteredProjects(filter string) []string {
 		}
 	}
 	return filtered
+}
+
+// updateSourcesPicker handles keys in the sources picker modal (Task 26).
+func (m Model) updateSourcesPicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.registry == nil {
+		m.view = ViewList
+		return m, nil
+	}
+	all := m.registry.All()
+
+	switch msg.String() {
+	case "up", "k":
+		if m.sourcesPickerCursor > 0 {
+			m.sourcesPickerCursor--
+		}
+	case "down", "j":
+		if m.sourcesPickerCursor < len(all)-1 {
+			m.sourcesPickerCursor++
+		}
+	case " ":
+		// Toggle enabled state
+		if m.sourcesPickerCursor < len(all) {
+			_ = m.registry.Toggle(all[m.sourcesPickerCursor].ID())
+			m.refreshSecretsView()
+			m.buildFolderTree()
+			m.updateDisplayItems()
+		}
+	case "s":
+		// Persist enabled state to config
+		for i := range m.config.Sources {
+			m.config.Sources[i].Enabled = m.registry.IsEnabled(m.config.Sources[i].ID)
+		}
+		_ = m.config.Save()
+		m.statusMsg = "Sources configuration saved"
+		m.statusErr = false
+	case "esc", "q":
+		m.view = ViewList
+	}
+	return m, nil
+}
+
+// updateCreateSourcePicker handles keys in the create source picker (Task 27).
+func (m Model) updateCreateSourcePicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.registry == nil {
+		m.view = ViewList
+		return m, nil
+	}
+	active := m.registry.Active()
+
+	switch msg.String() {
+	case "up", "k":
+		if m.createSourceCursor > 0 {
+			m.createSourceCursor--
+		}
+	case "down", "j":
+		if m.createSourceCursor < len(active)-1 {
+			m.createSourceCursor++
+		}
+	case "enter":
+		if m.createSourceCursor < len(active) {
+			m.createSourceID = active[m.createSourceCursor].ID()
+			m.view = ViewCreate
+			m.createInputs[0].SetValue(strings.Join(m.currentPath, m.config.FolderSeparator))
+			if len(m.currentPath) > 0 {
+				m.createInputs[0].SetValue(m.createInputs[0].Value() + m.config.FolderSeparator)
+			}
+			m.createInputs[0].Focus()
+			m.createFocus = 0
+			if len(m.config.SecretLocations) > 0 {
+				m.createLocationIdx = 1
+			} else {
+				m.createLocationIdx = 0
+			}
+			m.createAddingLoc = false
+			m.createEditorMode = false
+			m.createValueArea.SetValue("")
+			return m, textinput.Blink
+		}
+	case "esc":
+		m.view = ViewList
+	}
+	return m, nil
 }
 
 func (m Model) updateFilter(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -1878,34 +2177,85 @@ func (m *Model) updateDisplayItems() {
 	m.listOffset = 0
 }
 
+// resolvedTemplates returns the merged template list for the currently selected secret's source.
+// Per-source templates take precedence over global ones with the same Title.
+func (m Model) resolvedTemplates() []config.Template {
+	sourceID := ""
+	if m.selectedSecret != nil {
+		sourceID = m.selectedSecret.SourceID
+	}
+	sourceTemplates := []config.Template{}
+	for _, s := range m.config.Sources {
+		if s.ID == sourceID {
+			sourceTemplates = s.Templates
+			break
+		}
+	}
+	templates := append([]config.Template{}, sourceTemplates...)
+	seen := map[string]bool{}
+	for _, t := range sourceTemplates {
+		seen[t.Title] = true
+	}
+	for _, t := range m.config.Templates {
+		if !seen[t.Title] {
+			templates = append(templates, t)
+		}
+	}
+	return templates
+}
+
 // generateCode generates code from a template
 func (m Model) generateCode(templateIdx int) string {
-	if templateIdx >= len(m.config.Templates) || m.selectedSecret == nil {
+	if m.selectedSecret == nil {
 		return ""
 	}
-	
-	tpl := m.config.Templates[templateIdx]
-	
-	// Extract just the secret name (last part)
-	parts := strings.Split(m.selectedSecret.Name, m.config.FolderSeparator)
+
+	templates := m.resolvedTemplates()
+	if templateIdx >= len(templates) {
+		return ""
+	}
+
+	tpl := templates[templateIdx]
+
+	sourceID := m.selectedSecret.SourceID
+
+	p, err := m.registry.Get(sourceID)
+	if err != nil {
+		return fmt.Sprintf("Error: %v", err)
+	}
+	sep := p.FolderSeparator()
+
+	// Extract just the secret name (last part after folder separator)
+	parts := strings.Split(m.selectedSecret.Name, sep)
 	shortName := parts[len(parts)-1]
-	
+
+	// Determine ProjectID: only populated for GSM sources
+	projectIDVal := ""
+	for _, s := range m.config.Sources {
+		if s.ID == sourceID {
+			projectIDVal = s.ProjectID
+			break
+		}
+	}
+
 	data := map[string]string{
 		"SecretName":     shortName,
 		"FullSecretName": m.selectedSecret.Name,
-		"ProjectID":      m.config.ProjectID,
+		"ProjectID":      projectIDVal,
+		"SourceID":       sourceID,
+		"Provider":       p.Kind(),
 	}
-	
+
 	t, err := template.New("code").Parse(tpl.Code)
 	if err != nil {
 		return fmt.Sprintf("Template error: %v", err)
 	}
-	
+
 	var buf bytes.Buffer
 	if err := t.Execute(&buf, data); err != nil {
 		return fmt.Sprintf("Execution error: %v", err)
 	}
-	
+
 	return buf.String()
 }
 
@@ -1973,16 +2323,42 @@ func (m Model) View() string {
 	case ViewLocked:
 		content = m.viewLocked()
 		footer = LockedViewBindings()
+	case ViewSourcesPicker:
+		content = m.viewSourcesPicker()
+		footer = SourcesPickerBindings()
+	case ViewCreateSourcePicker:
+		content = m.viewCreateSourcePicker()
+		footer = SourcesPickerBindings()
+	case ViewSourcesEditor:
+		content = m.viewSourcesEditor()
+		footer = SourcesEditorBindings()
+	case ViewSourceForm:
+		content = m.viewSourceForm()
+		footer = SourceFormBindings()
+	case ViewSourceLoginPrompt:
+		content = m.viewSourceLoginPrompt()
+		footer = SourceLoginBindings()
 	}
-	
+
 	return m.renderLayout(content, footer)
 }
 
 func (m Model) renderLayout(content string, footerBindings []FooterBinding) string {
-	// Header
-	header := m.styles.Header.Width(m.width).Render(
-		fmt.Sprintf("🔐 GCP Secret Manager  │  %s", m.config.ProjectID),
-	)
+	// Header - show source filter info when in list view
+	headerText := "🔐 go-secret"
+	if m.registry != nil {
+		active := m.registry.Active()
+		if len(active) > 0 {
+			if m.sourceFilter == "" {
+				headerText += fmt.Sprintf("  │  [ALL sources: %d]", len(active))
+			} else {
+				headerText += fmt.Sprintf("  │  [%s]", m.sourceFilter)
+			}
+		}
+	} else if m.config.ProjectID != "" {
+		headerText += fmt.Sprintf("  │  %s", m.config.ProjectID)
+	}
+	header := m.styles.Header.Width(m.width).Render(headerText)
 	
 	// Footer with keybindings
 	var footerParts []string
@@ -2052,43 +2428,53 @@ func (m Model) viewList() string {
 	if m.loading {
 		return m.viewSplash(m.loadingMsg, "⏳", "")
 	}
-	
+
 	var b strings.Builder
-	
+
 	// Breadcrumb
 	breadcrumb := m.renderBreadcrumb()
 	b.WriteString(breadcrumb)
-	b.WriteString("\n\n")
-	
+	b.WriteString("\n")
+
+	// Source filter indicator (Task 25)
+	if m.sourceFilter == "" {
+		b.WriteString(m.styles.StatusInfo.Render("Source: [ALL]"))
+	} else {
+		b.WriteString(m.styles.StatusSuccess.Render(fmt.Sprintf("Source: [%s]", m.sourceFilter)))
+	}
+	b.WriteString(m.styles.SubtleText().Render("  Tab/Shift+Tab to cycle  ^P=sources"))
+	b.WriteString("\n")
+
 	// Filter indicator
 	if m.filterText != "" {
 		b.WriteString(m.styles.StatusWarning.Render(fmt.Sprintf("Filter: %s", m.filterText)))
-		b.WriteString("\n\n")
+		b.WriteString("\n")
 	}
-	
+	b.WriteString("\n")
+
 	// List items
 	if len(m.displayItems) == 0 {
 		b.WriteString(m.styles.SubtleText().Render("No secrets found"))
 	} else {
 		// Calculate visible window
-		visibleHeight := m.height - 10 // Leave room for header, footer, breadcrumb, etc.
+		visibleHeight := m.height - 11 // Leave room for header, footer, breadcrumb, source line, etc.
 		if visibleHeight < 5 {
 			visibleHeight = 5
 		}
-		
+
 		startIdx := m.listOffset
 		endIdx := startIdx + visibleHeight
 		if endIdx > len(m.displayItems) {
 			endIdx = len(m.displayItems)
 		}
-		
+
 		// Show scroll indicator at top if needed
 		if startIdx > 0 {
 			b.WriteString(m.styles.SubtleText().Render(fmt.Sprintf("  ↑ %d more items above", startIdx)))
 			b.WriteString("\n")
 		}
-		
-		// Render visible items
+
+		// Render visible items - with PROVIDER badge for secrets (Task 24)
 		for i := startIdx; i < endIdx; i++ {
 			item := m.displayItems[i]
 			var line string
@@ -2098,32 +2484,39 @@ func (m Model) viewList() string {
 				icon = "📁"
 				nameStyle = m.styles.ListFolder
 			}
-			
+
 			name := nameStyle.Render(item.Name)
-			line = fmt.Sprintf("%s %s", icon, name)
-			
+
+			// Add PROVIDER badge for secret items
+			if !item.IsFolder && item.Secret != nil {
+				providerBadge := m.styles.ProviderBadge(item.Secret.SourceID).Render(item.Secret.SourceID)
+				line = fmt.Sprintf("%s %s  %s", icon, name, providerBadge)
+			} else {
+				line = fmt.Sprintf("%s %s", icon, name)
+			}
+
 			if i == m.cursor {
 				line = m.styles.ListSelected.Width(m.width - 6).Render(line)
 			} else {
 				line = m.styles.ListItem.Width(m.width - 6).Render(line)
 			}
-			
+
 			b.WriteString(line)
 			b.WriteString("\n")
 		}
-		
+
 		// Show scroll indicator at bottom if needed
 		remaining := len(m.displayItems) - endIdx
 		if remaining > 0 {
 			b.WriteString(m.styles.SubtleText().Render(fmt.Sprintf("  ↓ %d more items below", remaining)))
 			b.WriteString("\n")
 		}
-		
+
 		// Show position indicator
 		b.WriteString("\n")
 		b.WriteString(m.styles.SubtleText().Render(fmt.Sprintf("  %d/%d", m.cursor+1, len(m.displayItems))))
 	}
-	
+
 	return b.String()
 }
 
@@ -2145,13 +2538,20 @@ func (m Model) viewDetail() string {
 	b.WriteString("\n\n")
 	
 	// Details
+	b.WriteString(m.styles.DetailLabel.Render("Source:"))
+	b.WriteString(m.styles.ProviderBadge(m.selectedSecret.SourceID).Render(m.selectedSecret.SourceID))
+	b.WriteString("\n")
+
 	b.WriteString(m.styles.DetailLabel.Render("Created:"))
 	b.WriteString(m.styles.DetailValue.Render(m.selectedSecret.CreateTime))
 	b.WriteString("\n")
-	
-	b.WriteString(m.styles.DetailLabel.Render("Replication:"))
-	b.WriteString(m.styles.DetailValue.Render(m.selectedSecret.Replication))
-	b.WriteString("\n\n")
+
+	if m.selectedSecret.Replication != "" {
+		b.WriteString(m.styles.DetailLabel.Render("Replication:"))
+		b.WriteString(m.styles.DetailValue.Render(m.selectedSecret.Replication))
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
 	
 	// Versions
 	b.WriteString(m.styles.ListTitle.Render("Versions"))
@@ -2353,7 +2753,7 @@ func (m Model) viewGenerate() string {
 	b.WriteString(m.styles.InputLabel.Render("Select Template:"))
 	b.WriteString("\n\n")
 	
-	for i, tpl := range m.config.Templates {
+	for i, tpl := range m.resolvedTemplates() {
 		line := tpl.Title
 		if i == m.templateCursor {
 			line = m.styles.ListSelected.Width(40).Render("▶ " + line)
@@ -3010,5 +3410,986 @@ func (m Model) renderBreadcrumb() string {
 // SubtleText returns a subtle text style
 func (s *Styles) SubtleText() lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(ColorTextMuted)
+}
+
+// viewSourcesPicker renders the sources picker modal (Task 26).
+func (m Model) viewSourcesPicker() string {
+	var b strings.Builder
+
+	b.WriteString(m.styles.DialogTitle.Render("🔌 Sources"))
+	b.WriteString("\n\n")
+
+	if m.registry == nil {
+		b.WriteString(m.styles.SubtleText().Render("No registry initialized"))
+		return m.styles.Dialog.Render(b.String())
+	}
+
+	all := m.registry.All()
+	if len(all) == 0 {
+		b.WriteString(m.styles.SubtleText().Render("No sources configured"))
+		b.WriteString("\n\n")
+		b.WriteString(m.styles.SubtleText().Render("Add sources to your config file"))
+		return m.styles.Dialog.Render(b.String())
+	}
+
+	for i, p := range all {
+		enabled := m.registry.IsEnabled(p.ID())
+		checkbox := "[ ]"
+		if enabled {
+			checkbox = "[x]"
+		}
+
+		kindBadge := m.styles.ProviderBadge(p.Kind()).Render(p.Kind())
+		line := fmt.Sprintf("%s %s  %s  %s", checkbox, p.ID(), kindBadge, m.styles.SubtleText().Render(p.DisplayName()))
+
+		if i == m.sourcesPickerCursor {
+			line = m.styles.ListSelected.Width(55).Render("▶ " + line)
+		} else {
+			line = m.styles.ListItem.Width(55).Render("  " + line)
+		}
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+
+	b.WriteString("\n")
+	b.WriteString(m.styles.SubtleText().Render("Space to toggle  •  s to save  •  Esc to close"))
+
+	return m.styles.Dialog.Render(b.String())
+}
+
+// viewCreateSourcePicker renders the source picker for the create flow (Task 27).
+func (m Model) viewCreateSourcePicker() string {
+	var b strings.Builder
+
+	b.WriteString(m.styles.DialogTitle.Render("Select Source for New Secret"))
+	b.WriteString("\n\n")
+
+	if m.registry == nil {
+		b.WriteString(m.styles.SubtleText().Render("No registry initialized"))
+		return m.styles.Dialog.Render(b.String())
+	}
+
+	active := m.registry.Active()
+	if len(active) == 0 {
+		b.WriteString(m.styles.SubtleText().Render("No active sources. Enable sources with Ctrl+P."))
+		return m.styles.Dialog.Render(b.String())
+	}
+
+	for i, p := range active {
+		kindBadge := m.styles.ProviderBadge(p.Kind()).Render(p.Kind())
+		line := fmt.Sprintf("%s  %s  %s", p.ID(), kindBadge, m.styles.SubtleText().Render(p.DisplayName()))
+
+		if i == m.createSourceCursor {
+			line = m.styles.ListSelected.Width(55).Render("▶ " + line)
+		} else {
+			line = m.styles.ListItem.Width(55).Render("  " + line)
+		}
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+
+	b.WriteString("\n")
+	b.WriteString(m.styles.SubtleText().Render("Enter to select  •  Esc to cancel"))
+
+	return m.styles.Dialog.Render(b.String())
+}
+
+// ── Sources Editor ────────────────────────────────────────────────────────────
+
+// updateSourcesEditor handles keys in the full sources editor view.
+func (m Model) updateSourcesEditor(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	all := m.config.Sources
+
+	switch msg.String() {
+	case "up", "k":
+		if m.sourcesEditorCursor > 0 {
+			m.sourcesEditorCursor--
+		}
+	case "down", "j":
+		if m.sourcesEditorCursor < len(all)-1 {
+			m.sourcesEditorCursor++
+		}
+	case "n":
+		// New source — open empty form in add mode
+		m.sourceForm = m.initSourceForm("add", config.SourceConfig{
+			Provider:        "gsm",
+			Enabled:         true,
+			FolderSeparator: "/",
+			Mounts:          []config.VaultMount{{Path: "secret", Version: 2}},
+		})
+		m.view = ViewSourceForm
+		return m, textinput.Blink
+	case "e", "enter":
+		if len(all) > 0 && m.sourcesEditorCursor < len(all) {
+			sc := all[m.sourcesEditorCursor]
+			m.sourceForm = m.initSourceForm("edit", sc)
+			m.view = ViewSourceForm
+			return m, textinput.Blink
+		}
+	case "d":
+		if len(all) > 0 && m.sourcesEditorCursor < len(all) {
+			// Remove the source
+			sc := all[m.sourcesEditorCursor]
+			m.config.Sources = append(
+				m.config.Sources[:m.sourcesEditorCursor],
+				m.config.Sources[m.sourcesEditorCursor+1:]...,
+			)
+			if m.sourcesEditorCursor >= len(m.config.Sources) && m.sourcesEditorCursor > 0 {
+				m.sourcesEditorCursor--
+			}
+			_ = m.config.Save()
+			m.statusMsg = fmt.Sprintf("Source %q deleted", sc.ID)
+			m.statusErr = false
+			// Reload registry
+			return m, m.reloadRegistryCmd()
+		}
+	case "t":
+		// Toggle enabled
+		if len(all) > 0 && m.sourcesEditorCursor < len(all) {
+			m.config.Sources[m.sourcesEditorCursor].Enabled = !m.config.Sources[m.sourcesEditorCursor].Enabled
+			_ = m.config.Save()
+			// Sync registry runtime state
+			if m.registry != nil {
+				_ = m.registry.SetEnabled(m.config.Sources[m.sourcesEditorCursor].ID, m.config.Sources[m.sourcesEditorCursor].Enabled)
+			}
+			m.refreshSecretsView()
+			m.buildFolderTree()
+			m.updateDisplayItems()
+			if m.config.Sources[m.sourcesEditorCursor].Enabled {
+				m.statusMsg = fmt.Sprintf("Source %q enabled", m.config.Sources[m.sourcesEditorCursor].ID)
+			} else {
+				m.statusMsg = fmt.Sprintf("Source %q disabled", m.config.Sources[m.sourcesEditorCursor].ID)
+			}
+			m.statusErr = false
+		}
+	case "l":
+		// Login — for vault sources only
+		if len(all) > 0 && m.sourcesEditorCursor < len(all) {
+			sc := all[m.sourcesEditorCursor]
+			if sc.Provider != "vault" {
+				m.statusMsg = "Login only available for vault sources"
+				m.statusErr = true
+				return m, nil
+			}
+			if sc.Auth.Method == "approle" {
+				// Need secret_id from user
+				m.sourceLoginSourceID = sc.ID
+				m.sourceLoginInput.SetValue("")
+				m.sourceLoginInput.Focus()
+				m.view = ViewSourceLoginPrompt
+				return m, textinput.Blink
+			}
+			// token or oidc: just call NewFromSourceConfig synchronously
+			ctx := context.Background()
+			_, err := vault.NewFromSourceConfig(ctx, sc)
+			if err != nil {
+				m.statusMsg = fmt.Sprintf("Login failed: %v", err)
+				m.statusErr = true
+			} else {
+				m.statusMsg = "Login successful"
+				m.statusErr = false
+			}
+		}
+	case "V":
+		// Vault auto-discovery: detect VAULT_ADDR + token, enumerate KV mounts,
+		// then pre-populate the source form so the user just confirms with Ctrl+S.
+		address := os.Getenv("VAULT_ADDR")
+		token := os.Getenv("VAULT_TOKEN")
+		if token == "" {
+			if home, err := os.UserHomeDir(); err == nil {
+				if data, err := os.ReadFile(filepath.Join(home, ".vault-token")); err == nil {
+					token = strings.TrimSpace(string(data))
+				}
+			}
+		}
+		if address == "" || token == "" {
+			m.statusMsg = "Set VAULT_ADDR + token (~/.vault-token or VAULT_TOKEN env) first"
+			m.statusErr = true
+			return m, nil
+		}
+		ctx := context.Background()
+		mounts, err := vault.DiscoverMounts(ctx, address, token)
+		if err != nil {
+			m.statusMsg = fmt.Sprintf("Vault detect failed: %v", err)
+			m.statusErr = true
+			return m, nil
+		}
+		if len(mounts) == 0 {
+			m.statusMsg = fmt.Sprintf("No KV mounts at %s", address)
+			m.statusErr = true
+			return m, nil
+		}
+		id := vault.SuggestSourceID(address)
+		sc := vault.BuildSourceConfigFromDiscovery(id, address, mounts)
+		_ = vault.SaveToken(id, token)
+		m.sourceForm = m.initSourceForm("add", sc)
+		m.view = ViewSourceForm
+		return m, textinput.Blink
+	case "esc", "q":
+		m.view = ViewConfigMenu
+	}
+	return m, nil
+}
+
+// reloadRegistryCmd returns a command that re-initializes the registry from config.
+func (m Model) reloadRegistryCmd() tea.Cmd {
+	cfg := m.config
+	return func() tea.Msg {
+		ctx := context.Background()
+		reg, err := sources.LoadFromConfig(ctx, cfg)
+		if err != nil {
+			return registryInitializedMsg{err: err}
+		}
+		unified := sources.NewUnifiedClient(reg)
+		return registryInitializedMsg{registry: reg, unified: unified}
+	}
+}
+
+// viewSourcesEditor renders the full sources editor list.
+func (m Model) viewSourcesEditor() string {
+	var b strings.Builder
+
+	b.WriteString(m.styles.DialogTitle.Render("🔌 Sources Editor"))
+	b.WriteString("\n\n")
+
+	if len(m.config.Sources) == 0 {
+		b.WriteString(m.styles.SubtleText().Render("No sources configured. Press n to add one."))
+		b.WriteString("\n")
+		return m.styles.Dialog.Render(b.String())
+	}
+
+	// Column header
+	header := fmt.Sprintf("%-20s %-7s %-8s %-8s %s",
+		"ID", "PROV", "ENABLED", "DEFAULT", "DETAIL")
+	b.WriteString(m.styles.InputLabel.Render(header))
+	b.WriteString("\n")
+	b.WriteString(m.styles.SubtleText().Render(strings.Repeat("─", 65)))
+	b.WriteString("\n")
+
+	for i, sc := range m.config.Sources {
+		// Enabled indicator
+		enabledIcon := "✗"
+		enabledStyle := m.styles.StatusError
+		if sc.Enabled {
+			enabledIcon = "✓"
+			enabledStyle = m.styles.StatusSuccess
+		}
+
+		// Default indicator
+		defIcon := " "
+		if m.config.DefaultSource == sc.ID {
+			defIcon = "*"
+		}
+
+		// Provider badge
+		provBadge := m.styles.ProviderBadge(sc.Provider).Render(sc.Provider)
+
+		// Detail column
+		detail := ""
+		switch sc.Provider {
+		case "gsm":
+			detail = sc.ProjectID
+		case "vault":
+			detail = sc.Address
+		}
+		if len(detail) > 30 {
+			detail = detail[:27] + "..."
+		}
+
+		// Build row
+		idPart := sc.ID
+		if len(idPart) > 18 {
+			idPart = idPart[:15] + "..."
+		}
+		provPart := fmt.Sprintf("%-7s", "")
+		_ = provPart
+		enabledPart := enabledStyle.Render(fmt.Sprintf("%-8s", enabledIcon))
+		defPart := fmt.Sprintf("%-8s", defIcon)
+
+		// We compose with lipgloss to handle color escapes
+		row := idPart + " " + provBadge + " " + enabledPart + defPart + detail
+
+		if i == m.sourcesEditorCursor {
+			row = m.styles.ListSelected.Width(65).Render("▶ " + row)
+		} else {
+			row = m.styles.ListItem.Width(65).Render("  " + row)
+		}
+		b.WriteString(row)
+		b.WriteString("\n")
+	}
+
+	b.WriteString("\n")
+	b.WriteString(m.styles.SubtleText().Render("n add  e/Enter edit  d delete  t toggle  l login  V vault-detect  Esc back"))
+
+	return m.styles.Dialog.Render(b.String())
+}
+
+// ── Source Form ───────────────────────────────────────────────────────────────
+
+// sourceFormFieldCount returns the number of visible fields for the current provider.
+// initSourceForm creates a sourceFormState for add or edit mode.
+func (m Model) initSourceForm(mode string, sc config.SourceConfig) sourceFormState {
+	if sc.FolderSeparator == "" {
+		sc.FolderSeparator = "/"
+	}
+	if sc.Auth.Method == "" && sc.Provider == "vault" {
+		sc.Auth.Method = "token"
+	}
+	if sc.Auth.OIDCPort == 0 && sc.Provider == "vault" {
+		sc.Auth.OIDCPort = 8250
+	}
+
+	// Build text inputs for the common + provider-specific text fields
+	inputs := buildSourceFormInputs(sc, mode)
+
+	return sourceFormState{
+		mode:         mode,
+		originalID:   sc.ID,
+		sc:           sc,
+		cursor:       0,
+		editingMount: -1,
+		inputs:       inputs,
+	}
+}
+
+// buildSourceFormInputs creates a fresh slice of text inputs for the source form fields.
+func buildSourceFormInputs(sc config.SourceConfig, mode string) []textinput.Model {
+	newInput := func(placeholder, val string, limit int) textinput.Model {
+		ti := textinput.New()
+		ti.Placeholder = placeholder
+		ti.CharLimit = limit
+		ti.SetValue(val)
+		return ti
+	}
+
+	sep := sc.FolderSeparator
+	if sep == "" {
+		sep = "/"
+	}
+	locStr := strings.Join(sc.SecretLocations, ",")
+
+	inputs := []textinput.Model{
+		// 0: ID
+		newInput("source-id", sc.ID, 50),
+		// 1: Provider (cycle, rendered as selector — use textinput for consistency but readonly)
+		newInput("gsm|vault", sc.Provider, 10),
+		// 2: DisplayName
+		newInput("My Vault", sc.DisplayName, 100),
+		// 3: FolderSeparator
+		newInput("/", sep, 5),
+		// 4: Enabled placeholder (toggle, not a text input — keep as marker)
+		newInput("", "", 1),
+	}
+
+	switch sc.Provider {
+	case "gsm":
+		inputs = append(inputs,
+			// 5: ProjectID
+			newInput("my-gcp-project", sc.ProjectID, 100),
+			// 6: SecretLocations
+			newInput("europe-west1,us-central1", locStr, 500),
+		)
+	case "vault":
+		roleStr := sc.Auth.Role
+		roleIDStr := sc.Auth.AppRoleRoleID
+		portStr := ""
+		if sc.Auth.OIDCPort > 0 {
+			portStr = fmt.Sprintf("%d", sc.Auth.OIDCPort)
+		}
+
+		inputs = append(inputs,
+			// 5: Address
+			newInput("https://vault.example.com:8200", sc.Address, 200),
+			// 6: AuthMethod (cycle)
+			newInput("token|approle|oidc", sc.Auth.Method, 10),
+		)
+		// 7: AuthRole (oidc or approle)
+		if sc.Auth.Method == "oidc" || sc.Auth.Method == "approle" {
+			inputs = append(inputs, newInput("my-role", roleStr, 100))
+		}
+		// 8: AuthRoleID (approle only)
+		if sc.Auth.Method == "approle" {
+			inputs = append(inputs, newInput("role-id-value", roleIDStr, 200))
+		}
+		// 9: OIDCPort (oidc only)
+		if sc.Auth.Method == "oidc" {
+			inputs = append(inputs, newInput("8250", portStr, 6))
+		}
+		// Mounts and Templates are rendered specially, no textinput for them
+	}
+
+	return inputs
+}
+
+// vaultFieldIndex returns the 0-based index in inputs[] for various vault fields.
+// base=5 always. After that depends on Auth.Method.
+func vaultFieldLabels(sc config.SourceConfig) []string {
+	labels := []string{"ID", "Provider", "Display Name", "Folder Sep", "Enabled"}
+	switch sc.Provider {
+	case "gsm":
+		labels = append(labels, "Project ID", "Secret Locations (comma-sep)")
+	case "vault":
+		labels = append(labels, "Address", "Auth Method")
+		if sc.Auth.Method == "oidc" || sc.Auth.Method == "approle" {
+			labels = append(labels, "Auth Role")
+		}
+		if sc.Auth.Method == "approle" {
+			labels = append(labels, "Auth Role ID")
+		}
+		if sc.Auth.Method == "oidc" {
+			labels = append(labels, "OIDC Port")
+		}
+		labels = append(labels, "Mounts", "Templates")
+	}
+	return labels
+}
+
+// mountsFieldIdx returns the index of the "Mounts" pseudo-field.
+// Returns -1 if not vault.
+func mountsFieldIdx(sc config.SourceConfig) int {
+	if sc.Provider != "vault" {
+		return -1
+	}
+	idx := 7 // after Address(5), AuthMethod(6)
+	if sc.Auth.Method == "oidc" || sc.Auth.Method == "approle" {
+		idx++ // role
+	}
+	if sc.Auth.Method == "approle" {
+		idx++ // role_id
+	}
+	if sc.Auth.Method == "oidc" {
+		idx++ // oidc_port
+	}
+	return idx
+}
+
+// templatesFieldIdx returns the index of the "Templates" pseudo-field.
+func templatesFieldIdx(sc config.SourceConfig) int {
+	m := mountsFieldIdx(sc)
+	if m < 0 {
+		return -1
+	}
+	return m + 1
+}
+
+// updateSourceForm handles key input for the source add/edit form.
+func (m Model) updateSourceForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	f := &m.sourceForm
+	labels := vaultFieldLabels(f.sc)
+	totalFields := len(labels)
+
+	// Determine if current field is a text input
+	isTextField := func(idx int) bool {
+		switch idx {
+		case 1: // Provider (cycle)
+			return false
+		case 4: // Enabled (toggle)
+			return false
+		}
+		mi := mountsFieldIdx(f.sc)
+		ti := templatesFieldIdx(f.sc)
+		if idx == mi || idx == ti {
+			return false
+		}
+		return idx < len(f.inputs)
+	}
+
+	// If editing a mount subfield, route input to the active mount input
+	if f.editingMount >= 0 && f.editingMount < len(f.sc.Mounts) {
+		switch msg.String() {
+		case "esc", "enter":
+			f.editingMount = -1
+			f.editingSubfield = 0
+		case "tab":
+			// cycle path <-> version subfield
+			f.editingSubfield = (f.editingSubfield + 1) % 2
+		case "left", "right":
+			if f.editingSubfield == 1 {
+				// cycle version 1 <-> 2
+				if f.sc.Mounts[f.editingMount].Version == 1 {
+					f.sc.Mounts[f.editingMount].Version = 2
+				} else {
+					f.sc.Mounts[f.editingMount].Version = 1
+				}
+			}
+		case "backspace":
+			if f.editingSubfield == 0 && len(f.sc.Mounts[f.editingMount].Path) > 0 {
+				p := f.sc.Mounts[f.editingMount].Path
+				f.sc.Mounts[f.editingMount].Path = p[:len(p)-1]
+			}
+		default:
+			if f.editingSubfield == 0 && len(msg.String()) == 1 {
+				f.sc.Mounts[f.editingMount].Path += msg.String()
+			}
+		}
+		m.sourceForm = *f
+		return m, nil
+	}
+
+	switch msg.String() {
+	case "ctrl+s":
+		return m.submitSourceForm()
+
+	case "esc":
+		m.view = ViewSourcesEditor
+		return m, nil
+
+	case "tab", "down":
+		// Focus next field
+		if isTextField(f.cursor) && f.cursor < len(f.inputs) {
+			f.inputs[f.cursor].Blur()
+		}
+		f.cursor = (f.cursor + 1) % totalFields
+		if isTextField(f.cursor) && f.cursor < len(f.inputs) {
+			f.inputs[f.cursor].Focus()
+		}
+		m.sourceForm = *f
+		return m, textinput.Blink
+
+	case "shift+tab", "up":
+		if isTextField(f.cursor) && f.cursor < len(f.inputs) {
+			f.inputs[f.cursor].Blur()
+		}
+		f.cursor--
+		if f.cursor < 0 {
+			f.cursor = totalFields - 1
+		}
+		if isTextField(f.cursor) && f.cursor < len(f.inputs) {
+			f.inputs[f.cursor].Focus()
+		}
+		m.sourceForm = *f
+		return m, textinput.Blink
+
+	case "enter", " ", "left", "right":
+		mi := mountsFieldIdx(f.sc)
+		ti := templatesFieldIdx(f.sc)
+
+		cursorMi := mi
+		cursorTi := ti
+
+		switch {
+		case f.cursor == 1: // Provider cycle
+			if f.mode == "add" {
+				switch f.sc.Provider {
+				case "gsm":
+					f.sc.Provider = "vault"
+					if f.sc.Auth.Method == "" {
+						f.sc.Auth.Method = "token"
+					}
+					if f.sc.Auth.OIDCPort == 0 {
+						f.sc.Auth.OIDCPort = 8250
+					}
+				default:
+					f.sc.Provider = "gsm"
+				}
+				f.inputs = buildSourceFormInputs(f.sc, f.mode)
+				f.cursor = 1
+			}
+		case f.cursor == 4: // Enabled toggle
+			f.sc.Enabled = !f.sc.Enabled
+		case f.cursor == cursorMi && cursorMi >= 0:
+			// Mounts field — enter sub-list for add/remove
+			switch msg.String() {
+			case "n", "+":
+				f.sc.Mounts = append(f.sc.Mounts, config.VaultMount{Path: "secret", Version: 2})
+			case "d", "backspace":
+				if len(f.sc.Mounts) > 0 {
+					f.sc.Mounts = f.sc.Mounts[:len(f.sc.Mounts)-1]
+				}
+			case "e", "enter":
+				if len(f.sc.Mounts) > 0 {
+					f.editingMount = 0
+					f.editingSubfield = 0
+				}
+			}
+		case f.cursor == cursorTi && cursorTi >= 0:
+			// Templates placeholder — show message
+			m.statusMsg = "Per-source template editing: coming in v2. Edit config.yaml directly for now."
+			m.statusErr = false
+		}
+
+		// Handle cycle for auth method
+		if f.cursor == 6 && f.sc.Provider == "vault" {
+			methods := []string{"token", "approle", "oidc"}
+			cur := 0
+			for i, method := range methods {
+				if method == f.sc.Auth.Method {
+					cur = i
+					break
+				}
+			}
+			if msg.String() == "left" {
+				cur = (cur - 1 + len(methods)) % len(methods)
+			} else {
+				cur = (cur + 1) % len(methods)
+			}
+			f.sc.Auth.Method = methods[cur]
+			f.inputs = buildSourceFormInputs(f.sc, f.mode)
+			f.cursor = 6
+		}
+
+		m.sourceForm = *f
+		return m, nil
+	}
+
+	// Delegate key to focused text input
+	if isTextField(f.cursor) && f.cursor < len(f.inputs) {
+		var cmd tea.Cmd
+		f.inputs[f.cursor], cmd = f.inputs[f.cursor].Update(msg)
+		m.sourceForm = *f
+		return m, cmd
+	}
+
+	m.sourceForm = *f
+	return m, nil
+}
+
+// submitSourceForm validates and saves the source form.
+func (m Model) submitSourceForm() (tea.Model, tea.Cmd) {
+	f := &m.sourceForm
+
+	// Sync input values back to sc
+	sc := &f.sc
+
+	// field 0: ID
+	if f.mode == "add" {
+		sc.ID = strings.TrimSpace(f.inputs[0].Value())
+	}
+	// field 2: DisplayName
+	sc.DisplayName = strings.TrimSpace(f.inputs[2].Value())
+	// field 3: FolderSeparator
+	sep := f.inputs[3].Value()
+	if sep == "" {
+		sep = "/"
+	}
+	sc.FolderSeparator = sep
+	// field 4: Enabled is already set by toggle
+
+	switch sc.Provider {
+	case "gsm":
+		sc.ProjectID = strings.TrimSpace(f.inputs[5].Value())
+		locRaw := strings.TrimSpace(f.inputs[6].Value())
+		if locRaw != "" {
+			parts := strings.Split(locRaw, ",")
+			locs := make([]string, 0, len(parts))
+			for _, p := range parts {
+				p = strings.TrimSpace(p)
+				if p != "" {
+					locs = append(locs, p)
+				}
+			}
+			sc.SecretLocations = locs
+		} else {
+			sc.SecretLocations = nil
+		}
+	case "vault":
+		sc.Address = strings.TrimSpace(f.inputs[5].Value())
+		// auth method already set via cycle
+
+		// Collect role/role_id/oidc_port from inputs
+		inpIdx := 7
+		if sc.Auth.Method == "oidc" || sc.Auth.Method == "approle" {
+			if inpIdx < len(f.inputs) {
+				sc.Auth.Role = strings.TrimSpace(f.inputs[inpIdx].Value())
+				inpIdx++
+			}
+		}
+		if sc.Auth.Method == "approle" {
+			if inpIdx < len(f.inputs) {
+				sc.Auth.AppRoleRoleID = strings.TrimSpace(f.inputs[inpIdx].Value())
+				inpIdx++
+			}
+		}
+		if sc.Auth.Method == "oidc" {
+			if inpIdx < len(f.inputs) {
+				portStr := strings.TrimSpace(f.inputs[inpIdx].Value())
+				port := 8250
+				if portStr != "" {
+					_, _ = fmt.Sscanf(portStr, "%d", &port)
+				}
+				sc.Auth.OIDCPort = port
+			}
+		}
+	}
+
+	// Validation
+	if sc.ID == "" {
+		f.errMsg = "ID is required"
+		m.sourceForm = *f
+		return m, nil
+	}
+	if sc.Provider != "gsm" && sc.Provider != "vault" {
+		f.errMsg = "Provider must be 'gsm' or 'vault'"
+		m.sourceForm = *f
+		return m, nil
+	}
+	if sc.Provider == "gsm" && sc.ProjectID == "" {
+		f.errMsg = "Project ID is required for GSM"
+		m.sourceForm = *f
+		return m, nil
+	}
+	if sc.Provider == "vault" {
+		if sc.Address == "" {
+			f.errMsg = "Address is required for Vault"
+			m.sourceForm = *f
+			return m, nil
+		}
+		if len(sc.Mounts) == 0 {
+			f.errMsg = "At least one mount is required for Vault"
+			m.sourceForm = *f
+			return m, nil
+		}
+	}
+
+	// Save to config
+	if f.mode == "add" {
+		// Check for duplicate ID
+		for _, existing := range m.config.Sources {
+			if existing.ID == sc.ID {
+				f.errMsg = fmt.Sprintf("Source with ID %q already exists", sc.ID)
+				m.sourceForm = *f
+				return m, nil
+			}
+		}
+		m.config.Sources = append(m.config.Sources, *sc)
+	} else {
+		// Replace existing
+		found := false
+		for i, existing := range m.config.Sources {
+			if existing.ID == f.originalID {
+				m.config.Sources[i] = *sc
+				found = true
+				break
+			}
+		}
+		if !found {
+			f.errMsg = fmt.Sprintf("Source %q not found in config", f.originalID)
+			m.sourceForm = *f
+			return m, nil
+		}
+	}
+
+	if err := m.config.Save(); err != nil {
+		f.errMsg = fmt.Sprintf("Save failed: %v", err)
+		m.sourceForm = *f
+		return m, nil
+	}
+
+	m.statusMsg = fmt.Sprintf("Source %q saved", sc.ID)
+	m.statusErr = false
+	m.view = ViewSourcesEditor
+
+	// Reload registry
+	return m, m.reloadRegistryCmd()
+}
+
+// viewSourceForm renders the source add/edit form.
+func (m Model) viewSourceForm() string {
+	f := &m.sourceForm
+	sc := f.sc
+	labels := vaultFieldLabels(sc)
+	mi := mountsFieldIdx(sc)
+	ti := templatesFieldIdx(sc)
+
+	var b strings.Builder
+
+	title := "🔌 Add Source"
+	if f.mode == "edit" {
+		title = fmt.Sprintf("🔌 Edit Source: %s", f.originalID)
+	}
+	b.WriteString(m.styles.DialogTitle.Render(title))
+	b.WriteString("\n\n")
+
+	isTextField := func(idx int) bool {
+		switch idx {
+		case 1: // Provider
+			return false
+		case 4: // Enabled
+			return false
+		}
+		if idx == mi || idx == ti {
+			return false
+		}
+		return idx < len(f.inputs)
+	}
+
+	for i, label := range labels {
+		focused := i == f.cursor
+		labelStr := label + ":"
+		if focused {
+			labelStr = "▶ " + labelStr
+		} else {
+			labelStr = "  " + labelStr
+		}
+
+		b.WriteString(m.styles.InputLabel.Render(labelStr))
+		b.WriteString("\n")
+
+		switch i {
+		case 0: // ID
+			style := m.styles.Input
+			if focused {
+				style = m.styles.InputFocused
+			}
+			if f.mode == "edit" {
+				b.WriteString(m.styles.SubtleText().Render("  " + sc.ID + " (cannot change in edit mode)"))
+			} else {
+				b.WriteString(style.Width(40).Render(f.inputs[i].View()))
+			}
+
+		case 1: // Provider
+			provStr := fmt.Sprintf("[ %s ]", sc.Provider)
+			if focused {
+				provStr = m.styles.ListSelected.Render("▶ " + provStr)
+			} else {
+				provStr = m.styles.ListItem.Render("  " + provStr)
+			}
+			hint := ""
+			if f.mode == "add" {
+				hint = m.styles.SubtleText().Render("  Enter/←/→ to cycle")
+			}
+			b.WriteString(provStr + hint)
+
+		case 4: // Enabled
+			enabledStr := "✗ disabled"
+			enabledStyle := m.styles.StatusError
+			if sc.Enabled {
+				enabledStr = "✓ enabled"
+				enabledStyle = m.styles.StatusSuccess
+			}
+			row := enabledStyle.Render(enabledStr)
+			if focused {
+				row = m.styles.ListSelected.Render("▶ " + row + "  (Enter/Space to toggle)")
+			} else {
+				row = m.styles.ListItem.Render("  " + row)
+			}
+			b.WriteString(row)
+
+		default:
+			if i == mi {
+				// Mounts pseudo-field
+				b.WriteString(m.styles.SubtleText().Render(fmt.Sprintf("  %d mounts configured:", len(sc.Mounts))))
+				b.WriteString("\n")
+				for j, mount := range sc.Mounts {
+					mountLine := fmt.Sprintf("    [%d] path=%s  version=%d", j+1, mount.Path, mount.Version)
+					if f.editingMount == j {
+						subIndic := "path"
+						if f.editingSubfield == 1 {
+							subIndic = "version"
+						}
+						mountLine += fmt.Sprintf("  [editing %s]", subIndic)
+						b.WriteString(m.styles.ListSelected.Render(mountLine))
+					} else {
+						b.WriteString(m.styles.ListItem.Render(mountLine))
+					}
+					b.WriteString("\n")
+				}
+				if focused {
+					b.WriteString(m.styles.SubtleText().Render("  n=add mount  d=remove last  e=edit first"))
+				}
+
+			} else if i == ti {
+				// Templates pseudo-field
+				count := len(sc.Templates)
+				tplLine := fmt.Sprintf("  Templates: %d", count)
+				if focused {
+					tplLine += "  [t to manage — v2 coming soon]"
+					b.WriteString(m.styles.ListSelected.Render(tplLine))
+				} else {
+					b.WriteString(m.styles.ListItem.Render(tplLine))
+				}
+
+			} else if isTextField(i) && i < len(f.inputs) {
+				style := m.styles.Input
+				if focused {
+					style = m.styles.InputFocused
+				}
+				b.WriteString(style.Width(50).Render(f.inputs[i].View()))
+			}
+		}
+		b.WriteString("\n\n")
+	}
+
+	// Error message
+	if f.errMsg != "" {
+		b.WriteString(m.styles.StatusError.Render("Error: " + f.errMsg))
+		b.WriteString("\n\n")
+	}
+
+	b.WriteString(m.styles.SubtleText().Render("Ctrl+S save  •  Esc cancel  •  Tab/↑↓ navigate"))
+
+	return m.styles.Dialog.Render(b.String())
+}
+
+// ── Source Login Prompt ───────────────────────────────────────────────────────
+
+// updateSourceLoginPrompt handles the approle secret_id input view.
+func (m Model) updateSourceLoginPrompt(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "enter":
+		secretID := m.sourceLoginInput.Value()
+		if secretID == "" {
+			m.statusMsg = "Secret ID is required"
+			m.statusErr = true
+			return m, nil
+		}
+		if err := vault.SaveAppRoleSecretID(m.sourceLoginSourceID, secretID); err != nil {
+			m.statusMsg = fmt.Sprintf("Failed to save secret ID: %v", err)
+			m.statusErr = true
+			m.view = ViewSourcesEditor
+			return m, nil
+		}
+		// Now try to login with the stored secret_id
+		var sc config.SourceConfig
+		for _, s := range m.config.Sources {
+			if s.ID == m.sourceLoginSourceID {
+				sc = s
+				break
+			}
+		}
+		ctx := context.Background()
+		_, err := vault.NewFromSourceConfig(ctx, sc)
+		if err != nil {
+			m.statusMsg = fmt.Sprintf("Login failed: %v", err)
+			m.statusErr = true
+		} else {
+			m.statusMsg = "Login successful"
+			m.statusErr = false
+		}
+		m.sourceLoginInput.SetValue("")
+		m.sourceLoginInput.Blur()
+		m.view = ViewSourcesEditor
+		return m, nil
+
+	case "esc":
+		m.sourceLoginInput.SetValue("")
+		m.sourceLoginInput.Blur()
+		m.view = ViewSourcesEditor
+		return m, nil
+	}
+
+	var cmd tea.Cmd
+	m.sourceLoginInput, cmd = m.sourceLoginInput.Update(msg)
+	return m, cmd
+}
+
+// viewSourceLoginPrompt renders the approle secret_id input screen.
+func (m Model) viewSourceLoginPrompt() string {
+	var b strings.Builder
+
+	b.WriteString(m.styles.DialogTitle.Render("🔐 Vault AppRole Login"))
+	b.WriteString("\n\n")
+	b.WriteString(m.styles.DetailLabel.Render("Source: "))
+	b.WriteString(m.styles.ProviderBadge("vault").Render(m.sourceLoginSourceID))
+	b.WriteString("\n\n")
+	b.WriteString(m.styles.InputLabel.Render("Secret ID:"))
+	b.WriteString("\n")
+	b.WriteString(m.styles.SubtleText().Render("(input hidden — value will be stored in OS keyring)"))
+	b.WriteString("\n")
+	b.WriteString(m.styles.InputFocused.Width(50).Render(m.sourceLoginInput.View()))
+	b.WriteString("\n\n")
+	b.WriteString(m.styles.SubtleText().Render("Enter to submit  •  Esc to cancel"))
+
+	return m.styles.Dialog.Render(b.String())
 }
 

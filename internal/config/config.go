@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -34,16 +35,55 @@ type SessionConfig struct {
 	LockOnTimeout     bool `yaml:"lock_on_timeout"`
 }
 
+// SourceConfig describes one secret backend. Either ProjectID (for "gsm")
+// or Address+Auth+Mounts (for "vault") is populated, never both.
+type SourceConfig struct {
+	ID              string     `yaml:"id"`
+	Provider        string     `yaml:"provider"`
+	Enabled         bool       `yaml:"enabled"`
+	DisplayName     string     `yaml:"display_name,omitempty"`
+	FolderSeparator string     `yaml:"folder_separator,omitempty"`
+	Templates       []Template `yaml:"templates,omitempty"`
+
+	// GSM
+	ProjectID       string   `yaml:"project_id,omitempty"`
+	SecretLocations []string `yaml:"secret_locations,omitempty"`
+
+	// Vault
+	Address string          `yaml:"address,omitempty"`
+	Auth    VaultAuthConfig `yaml:"auth,omitempty"`
+	Mounts  []VaultMount    `yaml:"mounts,omitempty"`
+}
+
+// VaultAuthConfig describes how to authenticate against a Vault source.
+type VaultAuthConfig struct {
+	Method        string `yaml:"method"`
+	Role          string `yaml:"role,omitempty"`
+	OIDCPort      int    `yaml:"oidc_port,omitempty"`
+	AppRoleRoleID string `yaml:"role_id,omitempty"`
+}
+
+// VaultMount describes a single KV mount within a Vault source.
+type VaultMount struct {
+	Path    string `yaml:"path"`
+	Version int    `yaml:"version,omitempty"`
+}
+
 // Config holds the application configuration
 type Config struct {
-	ProjectID        string          `yaml:"project_id"`
-	FolderSeparator  string          `yaml:"folder_separator"`
-	Templates        []Template      `yaml:"templates"`
-	RecentProjects   []string        `yaml:"recent_projects"`
-	SecretLocations  []string        `yaml:"secret_locations,omitempty"`
-	Clipboard        ClipboardConfig `yaml:"clipboard"`
-	Audit            AuditConfig     `yaml:"audit"`
-	Session          SessionConfig   `yaml:"session"`
+	DefaultSource string         `yaml:"default_source,omitempty"`
+	Sources       []SourceConfig `yaml:"sources,omitempty"`
+
+	Clipboard ClipboardConfig `yaml:"clipboard"`
+	Audit     AuditConfig     `yaml:"audit"`
+	Session   SessionConfig   `yaml:"session"`
+	Templates []Template      `yaml:"templates,omitempty"`
+
+	// Legacy (deprecated, auto-migrated by MigrateLegacy in Task 8). Kept until v2.
+	ProjectID       string   `yaml:"project_id,omitempty"`
+	RecentProjects  []string `yaml:"recent_projects,omitempty"`
+	SecretLocations []string `yaml:"secret_locations,omitempty"`
+	FolderSeparator string   `yaml:"folder_separator,omitempty"`
 }
 
 // DefaultConfig returns a config with sensible defaults
@@ -159,7 +199,6 @@ func Load() (*Config, error) {
 		return DefaultConfig(), nil
 	}
 
-	// Check if file exists and fix permissions if needed
 	info, err := os.Stat(configPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -167,10 +206,7 @@ func Load() (*Config, error) {
 		}
 		return nil, err
 	}
-
-	// Fix insecure permissions on existing config file
-	mode := info.Mode().Perm()
-	if mode != 0600 {
+	if info.Mode().Perm() != 0600 {
 		_ = os.Chmod(configPath, 0600)
 	}
 
@@ -178,12 +214,21 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-
 	cfg := DefaultConfig()
 	if err := yaml.Unmarshal(data, cfg); err != nil {
 		return nil, err
 	}
 
+	hadLegacy := cfg.ProjectID != "" || len(cfg.RecentProjects) > 0 ||
+		cfg.FolderSeparator != "" || len(cfg.SecretLocations) > 0
+	cfg = MigrateLegacy(cfg)
+
+	if hadLegacy {
+		// Persist the migrated shape so the next load is a no-op.
+		if err := cfg.Save(); err != nil {
+			return nil, fmt.Errorf("persisting migrated config: %w", err)
+		}
+	}
 	return cfg, nil
 }
 
@@ -264,4 +309,66 @@ func (c *Config) RemoveSecretLocation(location string) {
 		}
 	}
 	c.SecretLocations = filtered
+}
+
+// MigrateLegacy converts an old-shape Config (project_id at root, recent_projects, etc.)
+// into the new Sources-based shape. If Sources is already populated the input is
+// returned unchanged.
+func MigrateLegacy(cfg *Config) *Config {
+	if len(cfg.Sources) > 0 {
+		return cfg
+	}
+	if cfg.ProjectID == "" && len(cfg.RecentProjects) == 0 {
+		return cfg
+	}
+
+	known := map[string]bool{}
+	add := func(proj string, enabled bool) {
+		if proj == "" || known[proj] {
+			return
+		}
+		known[proj] = true
+		cfg.Sources = append(cfg.Sources, SourceConfig{
+			ID:              "gsm-" + sanitizeID(proj),
+			Provider:        "gsm",
+			Enabled:         enabled,
+			ProjectID:       proj,
+			FolderSeparator: cfg.FolderSeparator,
+			SecretLocations: append([]string(nil), cfg.SecretLocations...),
+		})
+	}
+	if cfg.ProjectID != "" {
+		add(cfg.ProjectID, true)
+		cfg.DefaultSource = "gsm-" + sanitizeID(cfg.ProjectID)
+	}
+	for _, p := range cfg.RecentProjects {
+		add(p, false)
+	}
+	// Re-enable the active one if it appeared first as inactive.
+	for i := range cfg.Sources {
+		if cfg.Sources[i].ProjectID == cfg.ProjectID {
+			cfg.Sources[i].Enabled = true
+		}
+	}
+
+	cfg.ProjectID = ""
+	cfg.RecentProjects = nil
+	cfg.FolderSeparator = ""
+	cfg.SecretLocations = nil
+	return cfg
+}
+
+func sanitizeID(s string) string {
+	out := make([]rune, 0, len(s))
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-':
+			out = append(out, r)
+		case r >= 'A' && r <= 'Z':
+			out = append(out, r+('a'-'A'))
+		case r == ' ' || r == '_' || r == '.':
+			out = append(out, '-')
+		}
+	}
+	return string(out)
 }

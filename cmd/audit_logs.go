@@ -13,9 +13,11 @@ import (
 )
 
 var (
-	auditLogsCount  int
-	auditLogsRaw    bool
-	auditLogsFilter string
+	auditLogsCount          int
+	auditLogsRaw            bool
+	auditLogsFilter         string
+	auditLogsSourceFilter   string
+	auditLogsProviderFilter string
 )
 
 var auditLogsCmd = &cobra.Command{
@@ -45,6 +47,8 @@ func init() {
 	auditLogsCmd.Flags().IntVarP(&auditLogsCount, "count", "n", 50, "Número de entradas a mostrar")
 	auditLogsCmd.Flags().BoolVarP(&auditLogsRaw, "raw", "r", false, "Mostrar JSON sin formato")
 	auditLogsCmd.Flags().StringVarP(&auditLogsFilter, "filter", "f", "", "Filtrar por tipo de evento")
+	auditLogsCmd.Flags().StringVar(&auditLogsSourceFilter, "source", "", "Filter by source ID")
+	auditLogsCmd.Flags().StringVar(&auditLogsProviderFilter, "provider", "", "Filter by provider kind (gsm|vault)")
 }
 
 func runAuditLogs() error {
@@ -85,21 +89,28 @@ func runAuditLogs() error {
 	}
 
 	// Filtrar si se especificó
-	if auditLogsFilter != "" {
+	if auditLogsFilter != "" || auditLogsSourceFilter != "" || auditLogsProviderFilter != "" {
 		filtered := make([]string, 0)
 		for _, line := range lines {
 			var event audit.Event
 			if err := json.Unmarshal([]byte(line), &event); err == nil {
-				if strings.Contains(string(event.EventType), strings.ToUpper(auditLogsFilter)) {
-					filtered = append(filtered, line)
+				if auditLogsFilter != "" && !strings.Contains(string(event.EventType), strings.ToUpper(auditLogsFilter)) {
+					continue
 				}
+				if auditLogsSourceFilter != "" && event.SourceID != auditLogsSourceFilter {
+					continue
+				}
+				if auditLogsProviderFilter != "" && event.Provider != auditLogsProviderFilter {
+					continue
+				}
+				filtered = append(filtered, line)
 			}
 		}
 		lines = filtered
 	}
 
 	if len(lines) == 0 {
-		fmt.Printf("No se encontraron logs que coincidan con el filtro: %s\n", auditLogsFilter)
+		fmt.Printf("No se encontraron logs que coincidan con los filtros especificados\n")
 		return nil
 	}
 

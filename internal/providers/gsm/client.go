@@ -1,4 +1,4 @@
-package gcp
+package gsm
 
 import (
 	"context"
@@ -14,6 +14,9 @@ import (
 	"cloud.google.com/go/secretmanager/apiv1/secretmanagerpb"
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/iterator"
+
+	"github.com/theburrowhub/go-secret/internal/config"
+	"github.com/theburrowhub/go-secret/internal/sources"
 )
 
 // Secret represents a GCP secret
@@ -34,9 +37,13 @@ type SecretVersion struct {
 
 // Client wraps the GCP Secret Manager client
 type Client struct {
-	client    *secretmanager.Client
-	projectID string
-	userEmail string
+	client         *secretmanager.Client
+	projectID      string
+	userEmail      string
+	id             string
+	displayName    string
+	folderSeparator string
+	locations      []string
 }
 
 // NewClient creates a new GCP Secret Manager client
@@ -56,6 +63,23 @@ func NewClient(ctx context.Context, projectID string) (*Client, error) {
 	}, nil
 }
 
+// NewFromSourceConfig is the canonical constructor used by sources.LoadFromConfig.
+// It instantiates a Client and populates the identity fields from sc.
+func NewFromSourceConfig(ctx context.Context, sc config.SourceConfig) (*Client, error) {
+	if sc.ProjectID == "" {
+		return nil, fmt.Errorf("gsm source %q missing project_id", sc.ID)
+	}
+	c, err := NewClient(ctx, sc.ProjectID)
+	if err != nil {
+		return nil, err
+	}
+	c.id = sc.ID
+	c.displayName = sc.DisplayName
+	c.folderSeparator = sc.FolderSeparator
+	c.locations = sc.SecretLocations
+	return c, nil
+}
+
 // Close closes the client connection
 func (c *Client) Close() error {
 	return c.client.Close()
@@ -69,6 +93,42 @@ func (c *Client) ProjectID() string {
 // UserEmail returns the authenticated user email
 func (c *Client) UserEmail() string {
 	return c.userEmail
+}
+
+// ID returns the source ID (sources.Provider).
+func (c *Client) ID() string { return c.id }
+
+// Kind returns the provider kind (sources.Provider).
+func (c *Client) Kind() string { return "gsm" }
+
+// DisplayName returns the human-friendly name (sources.Provider).
+func (c *Client) DisplayName() string {
+	if c.displayName != "" {
+		return c.displayName
+	}
+	return c.id
+}
+
+// FolderSeparator returns the configured folder separator (sources.Provider).
+func (c *Client) FolderSeparator() string {
+	if c.folderSeparator == "" {
+		return "/"
+	}
+	return c.folderSeparator
+}
+
+// Capabilities reports GSM-supported features (sources.Provider).
+func (c *Client) Capabilities() sources.Capabilities {
+	return sources.Capabilities{
+		SupportsVersions:  true,
+		SupportsLabels:    true,
+		SupportsLocations: true,
+	}
+}
+
+// Locations returns the configured GCP locations for this client.
+func (c *Client) Locations() []string {
+	return c.locations
 }
 
 // getAuthenticatedUser attempts to get the email of the authenticated GCP user
@@ -402,5 +462,122 @@ func (c *Client) UpdateSecretLabels(ctx context.Context, secretName string, labe
 	}
 
 	return nil
+}
+
+// --- sources.Provider adapter methods ---
+
+// List satisfies sources.Provider by delegating to ListSecrets.
+func (c *Client) List(ctx context.Context) ([]sources.Secret, error) {
+	raw, err := c.ListSecrets(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]sources.Secret, 0, len(raw))
+	for _, s := range raw {
+		out = append(out, sources.Secret{
+			Name:        s.Name,
+			SourceID:    c.id,
+			CreateTime:  s.CreateTime,
+			Labels:      s.Labels,
+			Replication: s.Replication,
+		})
+	}
+	return out, nil
+}
+
+// Get satisfies sources.Provider by delegating to GetSecret.
+func (c *Client) Get(ctx context.Context, name string) (*sources.Secret, error) {
+	s, err := c.GetSecret(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	return &sources.Secret{
+		Name:        s.Name,
+		SourceID:    c.id,
+		CreateTime:  s.CreateTime,
+		Labels:      s.Labels,
+		Replication: s.Replication,
+	}, nil
+}
+
+// Reveal satisfies sources.Provider by delegating to AccessSecretVersion.
+func (c *Client) Reveal(ctx context.Context, name, version string) ([]byte, error) {
+	if version == "" {
+		version = "latest"
+	}
+	return c.AccessSecretVersion(ctx, name, version)
+}
+
+// ListVersions satisfies sources.Provider by delegating to ListSecretVersions.
+func (c *Client) ListVersions(ctx context.Context, name string) ([]sources.Version, error) {
+	raw, err := c.ListSecretVersions(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]sources.Version, 0, len(raw))
+	for _, v := range raw {
+		out = append(out, sources.Version{
+			Name:       v.Name,
+			State:      normalizeGSMState(v.State),
+			CreateTime: v.CreateTime,
+		})
+	}
+	return out, nil
+}
+
+// Create satisfies sources.Provider by combining CreateSecret + AddSecretVersion.
+func (c *Client) Create(ctx context.Context, name string, value []byte, opts sources.CreateOpts) error {
+	if err := c.CreateSecret(ctx, name, opts.Labels, opts.Location); err != nil {
+		return err
+	}
+	if len(value) > 0 {
+		if _, err := c.AddSecretVersion(ctx, name, value); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Delete satisfies sources.Provider by delegating to DeleteSecret.
+func (c *Client) Delete(ctx context.Context, name string) error {
+	return c.DeleteSecret(ctx, name)
+}
+
+// AddVersion satisfies sources.Provider by delegating to AddSecretVersion.
+func (c *Client) AddVersion(ctx context.Context, name string, value []byte) (*sources.Version, error) {
+	v, err := c.AddSecretVersion(ctx, name, value)
+	if err != nil {
+		return nil, err
+	}
+	return &sources.Version{Name: v.Name, State: normalizeGSMState(v.State), CreateTime: v.CreateTime}, nil
+}
+
+// EnableVersion satisfies sources.Provider.
+func (c *Client) EnableVersion(ctx context.Context, name, version string) error {
+	return c.EnableSecretVersion(ctx, name, version)
+}
+
+// DisableVersion satisfies sources.Provider.
+func (c *Client) DisableVersion(ctx context.Context, name, version string) error {
+	return c.DisableSecretVersion(ctx, name, version)
+}
+
+// DestroyVersion satisfies sources.Provider.
+func (c *Client) DestroyVersion(ctx context.Context, name, version string) error {
+	return c.DestroySecretVersion(ctx, name, version)
+}
+
+// normalizeGSMState maps GCP enum-like state strings to the abstract values.
+func normalizeGSMState(s string) string {
+	switch s {
+	case "STATE_ENABLED":
+		return "ENABLED"
+	case "STATE_DISABLED":
+		return "DISABLED"
+	case "STATE_DESTROYED":
+		return "DESTROYED"
+	default:
+		return s
+	}
 }
 
